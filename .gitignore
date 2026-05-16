@@ -57,6 +57,7 @@ Desktop.ini
 
 # Logs
 *.log
+*.log.err
 logs/
 
 # Environment
@@ -74,3 +75,12 @@ venv.bak/
 temp/
 tmp/
 .python-version
+
+# Local worktrees
+.worktrees/
+worktrees/
+
+# Scanner runtime artifacts
+scanner/reports/*.json
+scanner/reports/*.jsonl
+scanner/tuning/*.json
