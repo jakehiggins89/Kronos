@@ -3,7 +3,8 @@ import logging
 import pandas as pd
 
 from scanner.edge.retrieval import EdgeRecord
-from scanner.main import _build_edge_diagnostic_payload, _score_edge_for_bars
+from scanner.utils.validation import OptionsContractResult
+from scanner.main import _build_edge_diagnostic_payload, _edge_data_quality, _score_edge_for_bars
 
 
 def _bars():
@@ -37,14 +38,82 @@ def _analog_records():
     ]
 
 
+def _valid_options_contract(*_args, **_kwargs):
+    return OptionsContractResult(
+        passed=True,
+        expiration="2026-02-20",
+        dte=35,
+        contract_type="call",
+        strike=105.0,
+        bid=1.0,
+        ask=1.1,
+        midpoint=1.05,
+        spread_pct=0.09,
+        open_interest=420,
+        volume=75,
+        implied_volatility=0.5,
+    )
+
+
 def test_score_edge_for_bars_returns_scorecard_without_network():
-    result = _score_edge_for_bars("TEST", _bars(), _analog_records(), logging.getLogger("test"))
+    result = _score_edge_for_bars(
+        "TEST",
+        _bars(),
+        _analog_records(),
+        logging.getLogger("test"),
+        options_selector=_valid_options_contract,
+    )
 
     assert result["status"] == "candidate"
     assert result["ticker"] == "TEST"
     assert "edge_score" in result
     assert "scorecard" in result
     assert result["analog_summary"]["count"] > 0
+
+
+def test_score_edge_for_bars_includes_option_liquidity(monkeypatch):
+    monkeypatch.setattr("scanner.main.select_options_contract", _valid_options_contract)
+
+    result = _score_edge_for_bars("TEST", _bars(), _analog_records(), logging.getLogger("test"))
+
+    assert result["status"] == "candidate"
+    assert result["features"]["options_passed"] == 1.0
+    assert result["features"]["options_open_interest"] == 420.0
+    assert result["features"]["options_volume"] == 75.0
+    assert result["features"]["options_spread_pct"] == 0.09
+
+
+def test_edge_data_quality_uses_provider_and_staleness_metadata():
+    bars = _bars()
+    now = bars.index[-1] + pd.Timedelta(minutes=90)
+
+    sip_quality = _edge_data_quality(
+        bars,
+        provider="alpaca",
+        alpaca_feed="sip",
+        alpaca_credentials_available=True,
+        now=now,
+    )
+    iex_quality = _edge_data_quality(
+        bars,
+        provider="alpaca",
+        alpaca_feed="iex",
+        alpaca_credentials_available=True,
+        now=now,
+    )
+    yfinance_quality = _edge_data_quality(
+        bars,
+        provider="yfinance",
+        alpaca_feed="sip",
+        alpaca_credentials_available=False,
+        now=now,
+    )
+
+    assert sip_quality["feed_confidence"] == 0.9
+    assert iex_quality["feed_confidence"] == 0.7
+    assert yfinance_quality["feed_confidence"] == 0.5
+    assert sip_quality["stale_minutes"] == 90
+    assert sip_quality["missing_bars"] == 0
 
 
 def test_build_edge_diagnostic_payload_summarizes_state():

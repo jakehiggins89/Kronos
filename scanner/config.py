@@ -6,12 +6,14 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent
 LOG_DIR = ROOT_DIR / "logs"
 REPORT_DIR = ROOT_DIR / "reports"
+EVIDENCE_DIR = REPORT_DIR / "evidence"
 TUNING_DIR = ROOT_DIR / "tuning"
 OVERRIDES_PATH = TUNING_DIR / "overrides.json"
 EDGE_INDEX_PATH = REPORT_DIR / "edge_retrieval_index.json"
 EDGE_SCAN_REPORT_PATH = REPORT_DIR / "edge_scan_report.json"
 EDGE_VALIDATION_REPORT_PATH = REPORT_DIR / "edge_validation_report.json"
 EDGE_DIAGNOSTIC_REPORT_PATH = REPORT_DIR / "edge_diagnostic_report.json"
+EDGE_AUDIT_REPORT_PATH = REPORT_DIR / "edge_audit_report.json"
 
 MIN_STOCK_PRICE = 5.00
 MIN_KRONOS_AGREEMENT = 0.65

@@ -54,6 +54,9 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     research_score = _finite_float(features.get("research_score"))
     rr_ratio = _finite_float(features.get("rr_ratio"))
     empty_space_score = _finite_float(features.get("empty_space_score"))
+    potter_passed = bool(features.get("potter_passed"))
+    empty_space_passed = bool(features.get("empty_space_passed")) or empty_space_score > 0.0
+    setup_gate_passed = potter_passed or empty_space_passed
     kronos_agreement = _finite_float(features.get("kronos_directional_agreement"), 0.5)
     kronos_median = _finite_float(features.get("kronos_median_forecast_return_pct"))
     data_quality = _finite_float(features.get("data_quality_score"), 1.0)
@@ -62,7 +65,8 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
 
     scorecard = {
         "base": 30.0,
-        "setup_quality": _clamp((research_score * 0.15) + (5.0 if features.get("potter_passed") else 0.0) + (empty_space_score * 2.0), 0.0, 24.0),
+        "setup_quality": _clamp((research_score * 0.15) + (5.0 if potter_passed else 0.0) + (empty_space_score * 2.0), 0.0, 24.0),
+        "setup_gate": 0.0 if setup_gate_passed else -25.0,
         "reward_risk": _clamp(rr_ratio * 4.0, 0.0, 12.0),
         "analog_expectancy": _clamp((summary["average_r_multiple"] * 25.0) + ((summary["win_rate"] - 0.5) * 20.0), -30.0, 35.0),
         "kronos": _clamp(((kronos_agreement - 0.5) * 20.0) + _clamp(kronos_median, -5.0, 5.0), -12.0, 12.0),
@@ -73,16 +77,19 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     }
     raw_score = sum(scorecard.values())
     edge_score = round(_clamp(raw_score, 0.0, 100.0), 2)
+    if not setup_gate_passed:
+        edge_score = min(edge_score, 44.0)
 
     if (
         edge_score >= 65.0
+        and setup_gate_passed
         and summary["count"] >= min_analogs
         and summary["average_r_multiple"] > 0.0
         and data_quality >= 0.5
         and feed_confidence >= 0.35
     ):
         recommendation = "promote"
-    elif edge_score >= 45.0:
+    elif edge_score >= 45.0 and setup_gate_passed:
         recommendation = "research"
     else:
         recommendation = "reject"

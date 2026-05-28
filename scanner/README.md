@@ -50,6 +50,12 @@ scanner\run_scanner.bat --mode autotune --apply_tuning
 scanner\run_scanner.bat --mode replay_eval --replay_dataset "C:\Users\Jacob Higgins\projects\kronos-predictor\scanner\replay\sample_replay_dataset.json"
 scanner\run_scanner.bat --mode research_scan
 scanner\run_scanner.bat --mode diagnose_zero_results
+scanner\run_scanner.bat --mode build_retrieval_index
+scanner\run_scanner.bat --mode validate_edge
+scanner\run_scanner.bat --mode edge_scan
+scanner\run_scanner.bat --mode diagnose_edge
+scanner\run_scanner.bat --mode audit_edge
+scanner\run_scanner.bat --mode run_edge_lab
 ```
 
 Equivalent Python commands:
@@ -59,6 +65,7 @@ Equivalent Python commands:
 .\venv\Scripts\python.exe -m scanner.main --mode backtest_daily_proxy_2y
 .\venv\Scripts\python.exe -m scanner.main --mode calibration --ticker PLTR --tradingview_csv C:\path\to\tradingview_export.csv
 .\venv\Scripts\python.exe -m scanner.main --mode calibration --calibration_csv_glob "C:\Users\Jacob Higgins\Downloads\BATS_*, 1D.csv" --sweep_anchors
+.\venv\Scripts\python.exe -m scanner.main --mode run_edge_lab
 ```
 
 ## What Is Logged
@@ -71,6 +78,29 @@ Equivalent Python commands:
 - Replay report at `scanner\reports\replay_eval_report.json`.
 - Calibration batch summary at `scanner\reports\calibration_summary.json`.
 - Zero-result diagnostic at `scanner\reports\zero_result_diagnostic.json`.
+- Edge Evidence Lab runs at `scanner\reports\evidence\<run_id>\manifest.json`.
+- Edge readiness audit at `scanner\reports\edge_audit_report.json`.
+
+## Edge Evidence Lab
+`run_edge_lab` executes the full research loop in one local run:
+1. Build the retrieval index.
+2. Validate scored historical candidates.
+3. Scan the current watchlist.
+4. Write diagnostics.
+
+Each lab run writes a manifest plus JSONL row artifacts for index records, validation candidates, scan candidates, metrics, and diagnostics. If a Parquet engine such as `pyarrow` is installed, matching `.parquet` sidecars are written automatically. If not, JSONL remains the canonical fallback. To enable Parquet sidecars, install the optional package extra with `.\venv\Scripts\python.exe -m pip install -e ".[evidence]"`.
+
+Edge validation uses purged walk-forward analogs: historical candidates are scored only against records available before that candidate timestamp. Current scans may use the full saved index, but validation reports mark `validation_method=purged_walk_forward` and `future_analogs_allowed=false`.
+
+Research recommendations are gated by live setup quality. Strong historical analogs cannot promote or research-label a candidate when both Potter Box and Empty Space gates fail.
+
+## Edge Readiness Audit
+`audit_edge` summarizes whether the current evidence is usable, research-only, or blocked. It checks:
+- Purged walk-forward validation is enabled and future analogs are blocked.
+- Threshold 55 has enough out-of-sample signals, precision, and positive average R.
+- Current candidates have usable feed confidence and non-missing options liquidity fields.
+
+The audit is intentionally conservative. Free IEX-only market data and indicative or missing options data are useful for research, but they should not be treated as capital-ready evidence without better coverage and liquidity checks.
 
 ## Self-Tuning Loop
 1. Run scanner (`dry_run` or `live`) so decisions are logged.

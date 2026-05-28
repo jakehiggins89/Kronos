@@ -173,5 +173,7 @@ def extract_edge_features(
         "data_stale_minutes": _finite_float(dq.get("stale_minutes")),
         "data_quality_score": _finite_float(dq.get("quality_score"), 1.0),
         "feed_confidence": _finite_float(dq.get("feed_confidence"), 0.5),
+        "data_provider": dq.get("provider"),
+        "data_feed": dq.get("feed"),
         "skip_reason": pb.get("skip_reason") or es.get("skip_reason") or ev.get("skip_reason") or opt.get("skip_reason"),
     }

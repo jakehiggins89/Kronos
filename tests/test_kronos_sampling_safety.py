@@ -39,3 +39,15 @@ def test_sample_from_logits_top_k_one_breaks_ties_deterministically():
     ]
 
     assert samples == [0] * 20
+
+
+def test_sample_from_logits_top_k_one_does_not_consume_rng():
+    logits = torch.tensor([[0.1, 9.0, 0.2]])
+    torch.manual_seed(123)
+    before = torch.random.get_rng_state()
+
+    sample = sample_from_logits(logits, temperature=1.0, top_k=1, top_p=1.0, sample_logits=True)
+    after = torch.random.get_rng_state()
+
+    assert int(sample.item()) == 1
+    assert torch.equal(before, after)

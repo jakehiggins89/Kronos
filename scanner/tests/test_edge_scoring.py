@@ -60,3 +60,21 @@ def test_score_edge_candidate_penalizes_thin_or_low_quality_evidence():
     assert result["recommendation"] != "promote"
     assert result["scorecard"]["sample_penalty"] < 0
     assert result["scorecard"]["data_quality"] < 0
+
+
+def test_score_edge_candidate_rejects_when_core_setup_gates_fail():
+    features = _features()
+    features["potter_passed"] = 0.0
+    features["empty_space_passed"] = 0.0
+    features["empty_space_score"] = 0.0
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 12.0, "r_multiple": 3.0, "mae_pct": -0.6, "mfe_pct": 14.0},
+        {"outcome_label": "win", "outcome_return_pct": 9.0, "r_multiple": 2.4, "mae_pct": -0.8, "mfe_pct": 10.0},
+        {"outcome_label": "win", "outcome_return_pct": 8.0, "r_multiple": 2.1, "mae_pct": -1.0, "mfe_pct": 9.0},
+    ]
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["edge_score"] < 45
+    assert result["recommendation"] == "reject"
+    assert result["scorecard"]["setup_gate"] < 0

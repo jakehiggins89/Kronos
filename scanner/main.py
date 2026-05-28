@@ -7,12 +7,14 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,10 +27,13 @@ from .config import (
     CALIBRATION_MIN_MATCHED_ROWS,
     CALIBRATION_PASS_AVG_ABS_MAX,
     CALIBRATION_WARN_AVG_ABS_MAX,
+    ALPACA_FEED,
     DRY_RUN_DEFAULT,
     EDGE_ANALOG_K,
+    EDGE_AUDIT_REPORT_PATH,
     EDGE_DIAGNOSTIC_REPORT_PATH,
     EDGE_EMBARGO_DAYS,
+    EVIDENCE_DIR,
     EDGE_INDEX_PATH,
     EDGE_MIN_ANALOGS,
     EDGE_SCAN_REPORT_PATH,
@@ -36,21 +41,25 @@ from .config import (
     EDGE_VALIDATION_REPORT_PATH,
     EDGE_VALIDATION_THRESHOLDS,
     LOG_DIR,
+    MARKET_DATA_PROVIDER_DEFAULT,
     MIN_EMPTY_SPACE_SCORE,
     MIN_RR,
     PRED_DAYS,
     REPORT_DIR,
     SYNTHETIC_SESSION_ANCHOR_HOUR,
     SYNTHETIC_SESSION_ANCHOR_MINUTE,
+    TIMEZONE,
 )
 from .data.events import assess_event_risk
 from .data.market_data import fetch_daily_bars, fetch_intraday_bars, validate_ticker
 from .data.options_data import select_options_contract
 from .data.synthetic_sessions import build_synthetic_sessions
+from .edge.audit import compute_edge_audit_report
 from .edge.features import extract_edge_features
-from .edge.retrieval import EdgeRecord, build_edge_records_from_bars, find_analogs, load_edge_index, save_edge_index
+from .edge.retrieval import EdgeAnalogIndex, EdgeRecord, build_edge_records_from_bars, find_analogs, load_edge_index, save_edge_index
 from .edge.scoring import score_edge_candidate
 from .edge.validation import compute_edge_validation_report
+from .evidence.store import EvidenceRun, start_evidence_run
 from .learning.autotuner import apply_overrides, propose_overrides
 from .learning.outcome_reviewer import review_pending_outcomes
 from .learning.outcome_store import append_decision, load_decisions, save_decisions
@@ -61,6 +70,11 @@ from .strategy.potter_box import detect_potter_box, score_potter_research_candid
 from .tickers import WATCHLIST
 from .utils.logging_setup import setup_logging
 from .utils.validation import AlertCandidate
+
+ENV_PATHS = (
+    Path(__file__).resolve().parents[1] / ".env",
+    Path(__file__).resolve().parent / ".env",
+)
 
 
 def _resolve_calibrated_anchor(ticker: str) -> tuple[int, int]:
@@ -105,6 +119,8 @@ def parse_args() -> argparse.Namespace:
             "edge_scan",
             "validate_edge",
             "diagnose_edge",
+            "audit_edge",
+            "run_edge_lab",
         ],
         default="dry_run" if DRY_RUN_DEFAULT else "live",
     )
@@ -126,8 +142,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_project_env_files() -> None:
+    for path in ENV_PATHS:
+        if not path.exists():
+            continue
+        for key, value in dotenv_values(path).items():
+            if value is None or not str(value).strip():
+                continue
+            if os.getenv(key, "").strip():
+                continue
+            os.environ[key] = str(value).strip()
+
+
 def _load_env() -> dict:
-    load_dotenv()
+    _load_project_env_files()
     return {
         "telegram_token": os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
@@ -203,7 +231,11 @@ def _write_zero_result_diagnostic(logger) -> dict:
 def _preflight_checks(mode: str, env: dict, logger) -> bool:
     provider = env["market_data_provider"]
     if provider == "alpaca" and (not env["alpaca_key"] or not env["alpaca_secret"]):
-        logger.error("Preflight failed: MARKET_DATA_PROVIDER=alpaca but Alpaca credentials are missing.")
+        logger.error(
+            "Preflight failed: MARKET_DATA_PROVIDER=alpaca requires both ALPACA_API_KEY "
+            "and ALPACA_SECRET_KEY. The dashboard Key/Key ID alone is not enough; "
+            "regenerate the paper API key and copy the Secret Key into scanner/.env."
+        )
         return False
     if mode in {"live", "test_telegram"} and (not env["telegram_token"] or not env["telegram_chat_id"]):
         logger.error("Preflight failed: Telegram token/chat id missing for mode=%s.", mode)
@@ -740,12 +772,72 @@ def _write_edge_report(path: Path, payload: dict, logger=None) -> dict:
     return payload
 
 
+def _edge_data_quality(
+    bars: pd.DataFrame,
+    *,
+    provider: str | None = None,
+    alpaca_feed: str | None = None,
+    alpaca_credentials_available: bool | None = None,
+    now: pd.Timestamp | None = None,
+) -> dict:
+    provider_choice = (provider or os.getenv("MARKET_DATA_PROVIDER", MARKET_DATA_PROVIDER_DEFAULT)).strip().lower()
+    feed = (alpaca_feed or os.getenv("ALPACA_FEED", ALPACA_FEED)).strip().lower() or "iex"
+    has_alpaca_credentials = (
+        bool(os.getenv("ALPACA_API_KEY", "").strip() and os.getenv("ALPACA_SECRET_KEY", "").strip())
+        if alpaca_credentials_available is None
+        else bool(alpaca_credentials_available)
+    )
+
+    effective_provider = provider_choice
+    if provider_choice == "auto":
+        effective_provider = "alpaca" if has_alpaca_credentials else "yfinance"
+
+    if effective_provider == "alpaca" and has_alpaca_credentials:
+        feed_confidence = 0.9 if feed == "sip" else 0.7
+    elif effective_provider == "alpaca":
+        feed_confidence = 0.35
+    else:
+        feed_confidence = 0.5
+
+    missing_bars = 0
+    stale_minutes = 0
+    quality_score = 1.0
+    if bars is None or bars.empty:
+        missing_bars = 1
+        quality_score = 0.0
+    else:
+        required_cols = [col for col in ["Open", "High", "Low", "Close", "Volume"] if col in bars.columns]
+        if required_cols:
+            missing_bars = int(bars[required_cols].isna().any(axis=1).sum())
+        latest_ts = pd.Timestamp(bars.index[-1])
+        now_ts = pd.Timestamp.now(tz=TIMEZONE) if now is None else pd.Timestamp(now)
+        if latest_ts.tzinfo is None and now_ts.tzinfo is not None:
+            latest_ts = latest_ts.tz_localize(TIMEZONE)
+        if latest_ts.tzinfo is not None and now_ts.tzinfo is None:
+            now_ts = now_ts.tz_localize(TIMEZONE)
+        stale_minutes = max(0, int((now_ts - latest_ts).total_seconds() // 60))
+        if missing_bars:
+            quality_score = max(0.0, 1.0 - min(missing_bars / max(len(bars), 1), 1.0))
+
+    return {
+        "quality_score": round(quality_score, 4),
+        "feed_confidence": feed_confidence,
+        "missing_bars": missing_bars,
+        "stale_minutes": stale_minutes,
+        "provider": effective_provider,
+        "feed": feed if effective_provider == "alpaca" else None,
+    }
+
+
 def _score_edge_for_bars(
     ticker: str,
     synthetic: pd.DataFrame,
-    index_records: list[EdgeRecord],
+    index_records: list[EdgeRecord] | EdgeAnalogIndex,
     logger,
+    options_selector=None,
 ) -> dict:
+    if options_selector is None:
+        options_selector = select_options_contract
     pb = detect_potter_box(ticker, synthetic)
     research = score_potter_research_candidate(pb, synthetic)
     direction = pb.direction if pb.direction in {"bullish", "bearish"} else research.get("direction")
@@ -760,17 +852,14 @@ def _score_edge_for_bars(
         }
 
     es = score_empty_space(synthetic, direction, float(entry), pb.cost_basis or float(entry))
+    options_contract = options_selector(ticker, direction, float(entry), logger)
     features = extract_edge_features(
         ticker=ticker,
         bars=synthetic,
         potter_box=pb,
         empty_space=es,
-        data_quality={
-            "quality_score": 1.0,
-            "feed_confidence": 0.5,
-            "missing_bars": 0,
-            "stale_minutes": 0,
-        },
+        options_contract=options_contract,
+        data_quality=_edge_data_quality(synthetic),
     )
     features["direction"] = direction
     features["research_score"] = research.get("score", 0)
@@ -830,7 +919,41 @@ def _build_edge_diagnostic_payload(
     }
 
 
-def run_build_retrieval_index(watchlist: list[str], logger) -> dict:
+def _git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def _numeric_metrics(payload: dict, prefix: str = "") -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for key, value in payload.items():
+        metric_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, bool):
+            metrics[metric_key] = 1.0 if value else 0.0
+        elif isinstance(value, int | float):
+            metrics[metric_key] = float(value)
+        elif isinstance(value, dict):
+            metrics.update(_numeric_metrics(value, metric_key))
+    return metrics
+
+
+def _record_report_artifact(evidence_run: EvidenceRun | None, path: Path) -> None:
+    if evidence_run is not None:
+        evidence_run.log_artifact(path)
+
+
+def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: EvidenceRun | None = None) -> dict:
     records: list[EdgeRecord] = []
     errors: dict[str, str] = {}
     for ticker in watchlist:
@@ -842,6 +965,8 @@ def run_build_retrieval_index(watchlist: list[str], logger) -> dict:
             logger.warning("EDGE_INDEX_SKIP: %s %s", ticker, exc)
 
     save_edge_index(records, EDGE_INDEX_PATH)
+    if evidence_run is not None:
+        evidence_run.record_rows("edge_index_records", [asdict(record) for record in records])
     payload = {
         "mode": "build_retrieval_index",
         "records": len(records),
@@ -849,16 +974,35 @@ def run_build_retrieval_index(watchlist: list[str], logger) -> dict:
         "errors": errors,
         "path": str(EDGE_INDEX_PATH.resolve()),
     }
+    if evidence_run is not None:
+        evidence_run.record_metrics(
+            "build_retrieval_index",
+            {
+                "index_records": len(records),
+                "watchlist_count": len(watchlist),
+                "error_count": len(errors),
+            },
+        )
     logger.info("EDGE_INDEX_REPORT: %s", json.dumps(payload))
-    return _write_edge_report(REPORT_DIR / "edge_index_report.json", payload, logger)
+    report_path = REPORT_DIR / "edge_index_report.json"
+    result = _write_edge_report(report_path, payload, logger)
+    _record_report_artifact(evidence_run, report_path)
+    return result
 
 
-def run_validate_edge(logger) -> dict:
+def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     records = load_edge_index(EDGE_INDEX_PATH)
+    analog_index = EdgeAnalogIndex(records)
     validation_records = records[-EDGE_VALIDATION_MAX_RECORDS:] if EDGE_VALIDATION_MAX_RECORDS > 0 else records
     candidates = []
     for record in validation_records:
-        analogs = find_analogs(record.features, records, k=EDGE_ANALOG_K, embargo_days=EDGE_EMBARGO_DAYS)
+        analogs = find_analogs(
+            record.features,
+            analog_index,
+            k=EDGE_ANALOG_K,
+            embargo_days=EDGE_EMBARGO_DAYS,
+            allow_future=False,
+        )
         scoring = score_edge_candidate(record.features, analogs, min_analogs=EDGE_MIN_ANALOGS)
         candidates.append(
             {
@@ -874,6 +1018,8 @@ def run_validate_edge(logger) -> dict:
                 "mfe_pct": record.mfe_pct,
             }
         )
+    if evidence_run is not None:
+        evidence_run.record_rows("validation_candidates", candidates)
     report = compute_edge_validation_report(
         candidates,
         thresholds=EDGE_VALIDATION_THRESHOLDS,
@@ -881,22 +1027,29 @@ def run_validate_edge(logger) -> dict:
         slippage_pct=0.05,
     )
     report["mode"] = "validate_edge"
+    report["validation_method"] = "purged_walk_forward"
+    report["future_analogs_allowed"] = False
     report["candidate_count"] = len(candidates)
     report["index_records"] = len(records)
     report["validation_record_limit"] = EDGE_VALIDATION_MAX_RECORDS
+    if evidence_run is not None:
+        evidence_run.record_metrics("validate_edge", _numeric_metrics(report))
     logger.info("EDGE_VALIDATION_REPORT: %s", json.dumps(report))
-    return _write_edge_report(EDGE_VALIDATION_REPORT_PATH, report, logger)
+    result = _write_edge_report(EDGE_VALIDATION_REPORT_PATH, report, logger)
+    _record_report_artifact(evidence_run, EDGE_VALIDATION_REPORT_PATH)
+    return result
 
 
-def run_edge_scan(watchlist: list[str], logger) -> dict:
+def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None = None) -> dict:
     records = load_edge_index(EDGE_INDEX_PATH)
+    analog_index = EdgeAnalogIndex(records)
     candidates = []
     for ticker in watchlist:
         try:
             anchor_hour, anchor_minute = _resolve_calibrated_anchor(ticker)
             intraday = fetch_intraday_bars(ticker)
             synthetic, _ = build_synthetic_sessions(intraday, anchor_hour, anchor_minute, "30m", True)
-            candidates.append(_score_edge_for_bars(ticker, synthetic, records, logger))
+            candidates.append(_score_edge_for_bars(ticker, synthetic, analog_index, logger))
         except Exception as exc:
             logger.warning("EDGE_SCAN_ERROR: %s %s", ticker, exc)
             candidates.append({"ticker": ticker, "status": "error", "reason": str(exc)})
@@ -907,11 +1060,26 @@ def run_edge_scan(watchlist: list[str], logger) -> dict:
         "total": len(ranked),
         "candidates": ranked,
     }
+    if evidence_run is not None:
+        evidence_run.record_rows("scan_candidates", ranked)
+        evidence_run.record_metrics(
+            "edge_scan",
+            {
+                "scan_candidates": len(ranked),
+                "index_records": len(records),
+                "promote_count": sum(1 for row in ranked if row.get("recommendation") == "promote"),
+                "research_count": sum(1 for row in ranked if row.get("recommendation") == "research"),
+                "skip_count": sum(1 for row in ranked if row.get("status") == "skip"),
+                "error_count": sum(1 for row in ranked if row.get("status") == "error"),
+            },
+        )
     logger.info("EDGE_SCAN_REPORT: %s", json.dumps({"mode": "edge_scan", "total": len(ranked), "index_records": len(records)}))
-    return _write_edge_report(EDGE_SCAN_REPORT_PATH, payload, logger)
+    result = _write_edge_report(EDGE_SCAN_REPORT_PATH, payload, logger)
+    _record_report_artifact(evidence_run, EDGE_SCAN_REPORT_PATH)
+    return result
 
 
-def run_diagnose_edge(logger) -> dict:
+def run_diagnose_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     records = load_edge_index(EDGE_INDEX_PATH)
     validation_report = None
     scan_report = None
@@ -926,8 +1094,70 @@ def run_diagnose_edge(logger) -> dict:
     except Exception:
         scan_report = None
     payload = _build_edge_diagnostic_payload(records, validation_report, scan_report)
+    if evidence_run is not None:
+        evidence_run.record_rows("diagnostics", [payload])
+        evidence_run.record_metrics("diagnose_edge", _numeric_metrics(payload))
     logger.info("EDGE_DIAGNOSTIC_REPORT: %s", json.dumps(payload))
-    return _write_edge_report(EDGE_DIAGNOSTIC_REPORT_PATH, payload, logger)
+    result = _write_edge_report(EDGE_DIAGNOSTIC_REPORT_PATH, payload, logger)
+    _record_report_artifact(evidence_run, EDGE_DIAGNOSTIC_REPORT_PATH)
+    return result
+
+
+def run_audit_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
+    try:
+        validation_report = json.loads(EDGE_VALIDATION_REPORT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        validation_report = {}
+    try:
+        scan_report = json.loads(EDGE_SCAN_REPORT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        scan_report = {}
+    payload = compute_edge_audit_report(validation_report, scan_report)
+    if evidence_run is not None:
+        evidence_run.record_rows("audits", [payload])
+        evidence_run.record_metrics("audit_edge", _numeric_metrics(payload))
+    logger.info("EDGE_AUDIT_REPORT: %s", json.dumps(payload))
+    result = _write_edge_report(EDGE_AUDIT_REPORT_PATH, payload, logger)
+    _record_report_artifact(evidence_run, EDGE_AUDIT_REPORT_PATH)
+    return result
+
+
+def run_edge_lab(watchlist: list[str], logger) -> dict:
+    evidence_run = start_evidence_run(
+        mode="run_edge_lab",
+        root_dir=EVIDENCE_DIR,
+        params={
+            "watchlist_count": len(watchlist),
+            "analog_k": EDGE_ANALOG_K,
+            "embargo_days": EDGE_EMBARGO_DAYS,
+            "min_analogs": EDGE_MIN_ANALOGS,
+            "validation_thresholds": list(EDGE_VALIDATION_THRESHOLDS),
+            "validation_record_limit": EDGE_VALIDATION_MAX_RECORDS,
+        },
+        tags={"git_commit": _git_commit()},
+    )
+    index_report = run_build_retrieval_index(watchlist, logger, evidence_run=evidence_run)
+    validation_report = run_validate_edge(logger, evidence_run=evidence_run)
+    scan_report = run_edge_scan(watchlist, logger, evidence_run=evidence_run)
+    diagnostic_report = run_diagnose_edge(logger, evidence_run=evidence_run)
+    audit_report = run_audit_edge(logger, evidence_run=evidence_run)
+    manifest_path = evidence_run.flush()
+    payload = {
+        "mode": "run_edge_lab",
+        "run_id": evidence_run.run_id,
+        "manifest_path": str(manifest_path.resolve()),
+        "index": index_report,
+        "validation": validation_report,
+        "scan": {
+            "mode": scan_report.get("mode"),
+            "total": scan_report.get("total", 0),
+            "index_records": scan_report.get("index_records", 0),
+        },
+        "diagnostic": diagnostic_report,
+        "audit": audit_report,
+    }
+    logger.info("EDGE_LAB_REPORT: %s", json.dumps(payload))
+    return payload
 
 
 def _sample_alert_template() -> str:
@@ -1023,6 +1253,12 @@ def main() -> int:
         return 0
     if args.mode == "diagnose_edge":
         run_diagnose_edge(logger)
+        return 0
+    if args.mode == "audit_edge":
+        run_audit_edge(logger)
+        return 0
+    if args.mode == "run_edge_lab":
+        run_edge_lab(WATCHLIST, logger)
         return 0
 
     # dry_run, research_scan, or live scan path

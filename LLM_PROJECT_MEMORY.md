@@ -1,6 +1,6 @@
 # Kronos Predictor LLM Project Memory
 
-Last updated: 2026-05-15
+Last updated: 2026-05-24
 
 This file is the first document future LLM agents should read. It explains what this project is, why the major folders exist, what changed in the latest Codex work session, and how to verify the system without making unsafe trading claims.
 
@@ -283,12 +283,36 @@ That is intentional. The system should reject weak evidence rather than manufact
 
 ## Recommended Next Work
 
-1. Improve retrieval performance. Current validation is bounded to 600 records because naive analog search over the full index is slow.
-2. Add provider-quality metadata into live scan features instead of defaulting feed confidence.
-3. Expand validation with purged walk-forward splits by date.
-4. Add a small dashboard or report renderer for edge scorecards.
-5. Collect more replay/outcome data before changing promotion thresholds.
-6. Consider better market and options data feeds before trusting live decisions.
+1. Improve validation/scoring so thresholded candidates produce enough purged walk-forward support before any live alerting.
+2. Add a small dashboard or report renderer for edge scorecards.
+3. Collect more replay/outcome data before changing promotion thresholds.
+4. Consider SIP or another full-quality market data feed before trusting live decisions.
+
+## 2026-05-24 Autonomous Upgrade Notes
+
+- `validate_edge` now uses a vectorized in-memory analog index and should run in a few seconds instead of roughly two minutes for the 600-record validation slice.
+- Historical validation now uses purged walk-forward analogs. Future records are not allowed when scoring a past candidate, and reports include `validation_method=purged_walk_forward`.
+- Edge scoring now has a setup gate: analog strength alone cannot produce a `research` or `promote` recommendation when both Potter Box and Empty Space gates fail.
+- Added `audit_edge`, a readiness report that blocks capital-readiness when validation support, feed confidence, or options liquidity evidence is missing.
+- `sample_from_logits(top_k=1)` now returns the argmax directly instead of consuming RNG through multinomial sampling.
+- Kronos exact regression tests force deterministic single-thread CPU execution because multi-threaded CPU kernels can drift near token decision boundaries.
+- May 24 refreshed validation is more conservative after leakage removal: threshold 45 produced 1 losing signal, thresholds 55 and 65 produced 0 signals. Current scan produced no `research` or `promote` candidates.
+
+## 2026-05-28 Nightly Readiness Notes
+
+- Restored local Alpaca configuration through ignored `scanner/.env`. Do not commit this file or echo secrets.
+- `scanner/main.py` now explicitly loads project `.env` and `scanner/.env`, ignoring blank template values and preserving already-set environment variables.
+- Edge scan features now include provider/feed metadata and real selected option liquidity when a contract passes the options filter.
+- Fresh Alpaca IEX `run_edge_lab` completed successfully:
+  - index records: 5675
+  - index errors: none
+  - validation samples: 600
+  - threshold 45/55/65 signals: 0
+  - top-K: 7 signals, 3 wins, 4 losses, precision 0.4286, average R -0.2615
+  - current scan: 16 rejects, 14 skips, 0 research/promote candidates
+  - max current edge score: 17.58
+  - audit readiness: blocked
+- Interpretation: Alpaca is wired and working, but the project is still not live-ready. The correct next move is better evidence and scoring calibration, not threshold relaxation.
 
 ## Git/Workspace Notes
 

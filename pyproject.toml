@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.2.0"]
+evidence = ["pyarrow>=16.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["model*", "scanner*"]

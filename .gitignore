@@ -83,4 +83,5 @@ worktrees/
 # Scanner runtime artifacts
 scanner/reports/*.json
 scanner/reports/*.jsonl
+scanner/reports/evidence/
 scanner/tuning/*.json

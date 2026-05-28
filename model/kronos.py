@@ -388,9 +388,7 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_l
     filter_top_k = 0 if top_k is None else top_k
     filter_top_p = 1.0 if top_p is None else top_p
     if filter_top_k == 1:
-        top_idx = torch.argmax(safe_logits, dim=-1, keepdim=True)
-        deterministic_logits = torch.full_like(safe_logits, -float("inf"))
-        safe_logits = deterministic_logits.scatter(1, top_idx, safe_logits.gather(1, top_idx))
+        return torch.argmax(safe_logits, dim=-1, keepdim=True)
     elif filter_top_k > 0 or filter_top_p < 1.0:
         safe_logits = top_k_top_p_filtering(
             safe_logits,

@@ -78,6 +78,18 @@ def _distance(query_features: dict, candidate_features: dict) -> float:
     return float(np.sqrt(np.mean(pieces)))
 
 
+def _is_numeric_feature(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value))
+
+
+def _record_payload(record: EdgeRecord) -> dict[str, Any]:
+    return asdict(record)
+
+
 def _future_outcome(
     bars: pd.DataFrame,
     idx: int,
@@ -156,7 +168,11 @@ def find_analogs(
     records: Iterable[EdgeRecord | dict],
     k: int = 7,
     embargo_days: int = 5,
+    allow_future: bool = True,
 ) -> list[dict[str, Any]]:
+    if isinstance(records, EdgeAnalogIndex):
+        return records.find_analogs(query_features, k=k, embargo_days=embargo_days, allow_future=allow_future)
+
     query_ticker = str(query_features.get("ticker", "")).upper()
     query_ts = _parse_ts(query_features.get("timestamp"))
     scored = []
@@ -172,15 +188,127 @@ def find_analogs(
             and abs((query_ts - candidate_ts).days) < embargo_days
         ):
             continue
+        if not allow_future and query_ts is not None and candidate_ts is not None and candidate_ts >= query_ts:
+            continue
         dist = _distance(query_features, record.features)
         if not math.isfinite(dist):
             continue
-        payload = asdict(record)
+        payload = _record_payload(record)
         payload["distance"] = dist
         scored.append(payload)
 
     scored.sort(key=lambda row: row["distance"])
     return scored[:k]
+
+
+class EdgeAnalogIndex:
+    """Vectorized in-memory analog search over EdgeRecord feature dictionaries."""
+
+    _excluded_keys = {"feature_version", "bar_count"}
+
+    def __init__(self, records: Iterable[EdgeRecord | dict]):
+        self.records = [raw if isinstance(raw, EdgeRecord) else EdgeRecord(**raw) for raw in records]
+        self._tickers = [record.ticker.upper() for record in self.records]
+        self._timestamps = [_parse_ts(record.timestamp) for record in self.records]
+        self._payloads: list[dict[str, Any] | None] = [None] * len(self.records)
+        self._keys = self._feature_keys(self.records)
+        self._matrix = self._feature_matrix(self.records, self._keys)
+
+    def find_analogs(
+        self,
+        query_features: dict,
+        k: int = 7,
+        embargo_days: int = 5,
+        allow_future: bool = True,
+    ) -> list[dict[str, Any]]:
+        if not self.records or k <= 0:
+            return []
+
+        distances = self._distances(query_features)
+        self._apply_time_filters(distances, query_features, embargo_days, allow_future)
+        finite_idx = np.flatnonzero(np.isfinite(distances))
+        if finite_idx.size == 0:
+            return []
+
+        limit = min(k, finite_idx.size)
+        if finite_idx.size > limit:
+            candidate_idx = finite_idx[np.argpartition(distances[finite_idx], limit - 1)[:limit]]
+        else:
+            candidate_idx = finite_idx
+        ordered_idx = candidate_idx[np.argsort(distances[candidate_idx], kind="stable")]
+        return [self._payload_with_distance(int(idx), float(distances[idx])) for idx in ordered_idx]
+
+    def _distances(self, query_features: dict) -> np.ndarray:
+        distances = np.full(len(self.records), np.inf, dtype=float)
+        if not self._keys:
+            return distances
+
+        query_vector = np.full(len(self._keys), np.nan, dtype=float)
+        for idx, key in enumerate(self._keys):
+            value = query_features.get(key)
+            if _is_numeric_feature(value):
+                query_vector[idx] = float(value)
+        if not np.isfinite(query_vector).any():
+            return distances
+
+        valid = np.isfinite(self._matrix) & np.isfinite(query_vector)
+        counts = valid.sum(axis=1)
+        usable = counts > 0
+        if not usable.any():
+            return distances
+
+        scale = np.maximum.reduce([np.abs(self._matrix), np.broadcast_to(np.abs(query_vector), self._matrix.shape), np.ones_like(self._matrix)])
+        pieces = np.where(valid, ((self._matrix - query_vector) / scale) ** 2, 0.0)
+        distances[usable] = np.sqrt(pieces[usable].sum(axis=1) / counts[usable])
+        return distances
+
+    def _apply_time_filters(
+        self,
+        distances: np.ndarray,
+        query_features: dict,
+        embargo_days: int,
+        allow_future: bool,
+    ) -> None:
+        query_ticker = str(query_features.get("ticker", "")).upper()
+        query_ts = _parse_ts(query_features.get("timestamp"))
+        if query_ts is None:
+            return
+        for idx, (ticker, candidate_ts) in enumerate(zip(self._tickers, self._timestamps, strict=False)):
+            if candidate_ts is None:
+                continue
+            if not allow_future and candidate_ts >= query_ts:
+                distances[idx] = np.inf
+                continue
+            if query_ticker and ticker == query_ticker and abs((query_ts - candidate_ts).days) < embargo_days:
+                distances[idx] = np.inf
+
+    def _payload_with_distance(self, idx: int, distance: float) -> dict[str, Any]:
+        payload = self._payloads[idx]
+        if payload is None:
+            payload = _record_payload(self.records[idx])
+            self._payloads[idx] = payload
+        out = dict(payload)
+        out["distance"] = distance
+        return out
+
+    @classmethod
+    def _feature_keys(cls, records: list[EdgeRecord]) -> list[str]:
+        keys: set[str] = set()
+        for record in records:
+            for key, value in record.features.items():
+                if key not in cls._excluded_keys and _is_numeric_feature(value):
+                    keys.add(key)
+        return sorted(keys)
+
+    @staticmethod
+    def _feature_matrix(records: list[EdgeRecord], keys: list[str]) -> np.ndarray:
+        matrix = np.full((len(records), len(keys)), np.nan, dtype=float)
+        for row_idx, record in enumerate(records):
+            for col_idx, key in enumerate(keys):
+                value = record.features.get(key)
+                if _is_numeric_feature(value):
+                    matrix[row_idx, col_idx] = float(value)
+        return matrix
 
 
 def save_edge_index(records: Iterable[EdgeRecord], path: str | Path) -> Path:

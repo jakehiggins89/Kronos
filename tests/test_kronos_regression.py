@@ -38,6 +38,13 @@ MAX_CTX_LEN = 512
 SEED = 123
 DEVICE = "cpu"
 
+torch.set_num_threads(1)
+try:
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    pass
+torch.use_deterministic_algorithms(True, warn_only=True)
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
