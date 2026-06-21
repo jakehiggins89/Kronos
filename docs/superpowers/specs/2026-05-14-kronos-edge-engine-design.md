@@ -212,4 +212,3 @@ The design is informed by:
 - Probabilistic time-series foundation model research: uncertainty matters as much as point forecasts.
 - Trade-flow and market microstructure foundation model research: scale-invariant market representations are a frontier direction, but current data access limits direct adoption.
 - Alpaca market data documentation: IEX/indicative feeds require explicit data-quality handling.
-

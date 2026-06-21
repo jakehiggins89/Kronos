@@ -63,3 +63,34 @@ def test_edge_audit_allows_research_only_when_validation_and_candidate_quality_p
     assert report["readiness"] == "research_only"
     assert report["blockers"] == []
     assert report["summary"]["research_candidates"] == 1
+
+
+def test_edge_audit_warns_when_options_data_is_not_execution_grade():
+    validation = {
+        "validation_method": "purged_walk_forward",
+        "future_analogs_allowed": False,
+        "thresholds": {
+            "55": {"signal_count": 25, "precision": 0.64, "average_r_multiple": 0.8},
+        },
+    }
+    scan = {
+        "candidates": [
+            {
+                "ticker": "TEST",
+                "status": "candidate",
+                "recommendation": "research",
+                "features": {
+                    "feed_confidence": 0.9,
+                    "options_open_interest": 250.0,
+                    "options_volume": 80.0,
+                    "options_spread_pct": 0.05,
+                    "options_data_quality": 0.6,
+                },
+            }
+        ]
+    }
+
+    report = compute_edge_audit_report(validation, scan)
+
+    assert "options_data_not_execution_grade" in report["warnings"]
+    assert report["summary"]["non_execution_grade_options_candidates"] == ["TEST"]

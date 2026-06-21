@@ -93,6 +93,7 @@ def compute_edge_audit_report(
     warnings: list[str] = []
     low_feed_candidates = []
     missing_liquidity_candidates = []
+    non_execution_options_candidates = []
     for row in active_candidates:
         features = _candidate_features(row)
         if _finite_float(features.get("feed_confidence"), 0.5) < 0.75:
@@ -102,11 +103,15 @@ def compute_edge_audit_report(
         spread = _finite_float(features.get("options_spread_pct"))
         if open_interest <= 0 or option_volume <= 0 or spread <= 0:
             missing_liquidity_candidates.append(row.get("ticker", "unknown"))
+        if _finite_float(features.get("options_data_quality"), 0.45) < 0.75:
+            non_execution_options_candidates.append(row.get("ticker", "unknown"))
 
     if low_feed_candidates:
         warnings.append("low_feed_confidence")
     if missing_liquidity_candidates:
         warnings.append("options_liquidity_missing")
+    if non_execution_options_candidates:
+        warnings.append("options_data_not_execution_grade")
     if not research_candidates and not promoted_candidates:
         warnings.append("no_current_actionable_candidates")
 
@@ -132,5 +137,6 @@ def compute_edge_audit_report(
             "promoted_candidates": len(promoted_candidates),
             "low_feed_confidence_candidates": low_feed_candidates,
             "missing_options_liquidity_candidates": missing_liquidity_candidates,
+            "non_execution_grade_options_candidates": non_execution_options_candidates,
         },
     }

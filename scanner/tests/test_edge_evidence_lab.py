@@ -47,7 +47,7 @@ def test_build_retrieval_index_records_evidence(monkeypatch, tmp_path):
     evidence = start_evidence_run("build_retrieval_index", tmp_path)
     monkeypatch.setattr("scanner.main.EDGE_INDEX_PATH", tmp_path / "edge_index.json")
     monkeypatch.setattr("scanner.main.REPORT_DIR", tmp_path)
-    monkeypatch.setattr("scanner.main.fetch_daily_bars", lambda ticker: pd.DataFrame({"Close": [1, 2, 3]}))
+    monkeypatch.setattr("scanner.main.fetch_daily_bars", lambda ticker, research=False: pd.DataFrame({"Close": [1, 2, 3]}))
     monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
 
     payload = run_build_retrieval_index(["AAA", "BBB"], logger, evidence_run=evidence)

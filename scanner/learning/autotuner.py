@@ -27,6 +27,7 @@ from ..config import (
     RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS,
     TUNING_DIR,
 )
+from .outcome_store import deduplicate_decisions
 
 
 def _clamp(value, bounds):
@@ -34,9 +35,16 @@ def _clamp(value, bounds):
 
 
 def propose_overrides(records: list[dict]) -> dict:
-    resolved = [r for r in records if r.get("outcome_status") == "resolved"]
+    unique_records, dedupe_report = deduplicate_decisions(records)
+    resolved = [r for r in unique_records if r.get("outcome_status") == "resolved"]
+    duplicate_records_ignored = dedupe_report["duplicates_removed"]
     if len(resolved) < AUTOTUNE_MIN_SAMPLES:
-        return {"status": "insufficient_samples", "samples": len(resolved), "overrides": {}}
+        return {
+            "status": "insufficient_samples",
+            "samples": len(resolved),
+            "duplicate_records_ignored": duplicate_records_ignored,
+            "overrides": {},
+        }
 
     missed_winners = [r for r in resolved if not r.get("final_pass") and r.get("outcome_label") == "win"]
     correct_skips = [r for r in resolved if not r.get("final_pass") and r.get("outcome_label") == "loss"]
@@ -70,6 +78,7 @@ def propose_overrides(records: list[dict]) -> dict:
         return {
             "status": "hold_no_edge",
             "samples": len(resolved),
+            "duplicate_records_ignored": duplicate_records_ignored,
             "missed_winners": len(missed_winners),
             "correct_skips": len(correct_skips),
             "missed_win_rate": round(float(missed_win_rate), 4),
@@ -114,6 +123,7 @@ def propose_overrides(records: list[dict]) -> dict:
     return {
         "status": "ok",
         "samples": len(resolved),
+        "duplicate_records_ignored": duplicate_records_ignored,
         "missed_winners": len(missed_winners),
         "correct_skips": len(correct_skips),
         "missed_win_rate": round(float(missed_win_rate), 4),

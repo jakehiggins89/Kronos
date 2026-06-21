@@ -4,7 +4,13 @@ import pandas as pd
 
 from scanner.edge.retrieval import EdgeRecord
 from scanner.utils.validation import OptionsContractResult
-from scanner.main import _build_edge_diagnostic_payload, _edge_data_quality, _score_edge_for_bars
+from scanner.main import (
+    _build_edge_diagnostic_payload,
+    _data_provenance,
+    _edge_data_quality,
+    _score_edge_for_bars,
+    run_watchlist_scan,
+)
 
 
 def _bars():
@@ -116,6 +122,19 @@ def test_edge_data_quality_uses_provider_and_staleness_metadata():
     assert sip_quality["missing_bars"] == 0
 
 
+def test_data_provenance_reads_bar_metadata():
+    bars = _bars()
+    bars.attrs.update({"data_provider": "alpaca", "data_feed": "sip", "data_delay_minutes": 16})
+
+    provenance = _data_provenance(bars)
+
+    assert provenance == {
+        "data_provider": "alpaca",
+        "data_feed": "sip",
+        "data_delay_minutes": 16,
+    }
+
+
 def test_build_edge_diagnostic_payload_summarizes_state():
     payload = _build_edge_diagnostic_payload(
         index_records=_analog_records(),
@@ -126,3 +145,24 @@ def test_build_edge_diagnostic_payload_summarizes_state():
     assert payload["index_records"] == 3
     assert payload["validation_samples"] == 10
     assert payload["recommendation_counts"]["promote"] == 1
+
+
+def test_watchlist_scan_reports_runtime_metadata(monkeypatch):
+    clock = iter([100.0, 101.0, 103.5, 107.0, 108.0])
+    timestamps = iter(["start", "done"])
+    monkeypatch.setattr("scanner.main._monotonic_seconds", lambda: next(clock))
+    monkeypatch.setattr("scanner.main._utc_now_iso", lambda: next(timestamps))
+    monkeypatch.setattr(
+        "scanner.main._run_single_ticker",
+        lambda ticker, mode, env, kronos, minimax, logger: {"ticker": ticker, "status": "skip", "reason": "test"},
+    )
+
+    summary = run_watchlist_scan(["AAA", "BBB"], "research_scan", {}, logging.getLogger("test"))
+
+    assert summary["started_at"] == "start"
+    assert summary["completed_at"] == "done"
+    assert summary["duration_seconds"] == 8.0
+    assert summary["ticker_timings"] == [
+        {"ticker": "AAA", "status": "skip", "duration_seconds": 2.5},
+        {"ticker": "BBB", "status": "skip", "duration_seconds": 1.0},
+    ]

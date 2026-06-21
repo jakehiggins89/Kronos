@@ -62,6 +62,7 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     data_quality = _finite_float(features.get("data_quality_score"), 1.0)
     feed_confidence = _finite_float(features.get("feed_confidence"), 0.5)
     options_spread = _finite_float(features.get("options_spread_pct"))
+    options_data_quality = _finite_float(features.get("options_data_quality"), 0.45)
 
     scorecard = {
         "base": 30.0,
@@ -74,6 +75,7 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         "sample_penalty": -_clamp(max(min_analogs - summary["count"], 0) * 5.0, 0.0, 20.0),
         "data_quality": _clamp(((data_quality - 1.0) * 15.0) + ((feed_confidence - 0.5) * 10.0), -18.0, 6.0),
         "options_liquidity": -_clamp(max(options_spread - 0.12, 0.0) * 100.0, 0.0, 10.0),
+        "options_data_quality": -_clamp(max(0.75 - options_data_quality, 0.0) * 20.0, 0.0, 8.0),
     }
     raw_score = sum(scorecard.values())
     edge_score = round(_clamp(raw_score, 0.0, 100.0), 2)
@@ -87,6 +89,7 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         and summary["average_r_multiple"] > 0.0
         and data_quality >= 0.5
         and feed_confidence >= 0.35
+        and options_data_quality >= 0.75
     ):
         recommendation = "promote"
     elif edge_score >= 45.0 and setup_gate_passed:

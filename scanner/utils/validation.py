@@ -75,6 +75,15 @@ class OptionsContractResult:
     volume: int | None
     implied_volatility: float | None
     skip_reason: str | None = None
+    data_provider: str | None = None
+    data_feed: str | None = None
+    quote_source: str | None = None
+    open_interest_source: str | None = None
+    quote_timestamp: str | None = None
+    quote_age_minutes: float | None = None
+    greeks_available: bool | None = None
+    source_disagreement_pct: float | None = None
+    options_data_quality: float | None = None
 
 
 @dataclass

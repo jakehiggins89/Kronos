@@ -74,6 +74,8 @@ venv.bak/
 *.temp
 temp/
 tmp/
+.codex-deps/
+.codex-tmp/
 .python-version
 
 # Local worktrees
@@ -85,3 +87,4 @@ scanner/reports/*.json
 scanner/reports/*.jsonl
 scanner/reports/evidence/
 scanner/tuning/*.json
+webui/prediction_results/

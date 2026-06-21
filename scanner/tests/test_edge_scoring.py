@@ -15,6 +15,7 @@ def _features():
         "data_quality_score": 1.0,
         "feed_confidence": 0.9,
         "options_spread_pct": 0.06,
+        "options_data_quality": 0.9,
     }
 
 
@@ -78,3 +79,17 @@ def test_score_edge_candidate_rejects_when_core_setup_gates_fail():
     assert result["edge_score"] < 45
     assert result["recommendation"] == "reject"
     assert result["scorecard"]["setup_gate"] < 0
+
+
+def test_score_edge_candidate_does_not_promote_indicative_options():
+    features = _features()
+    features["options_data_quality"] = 0.6
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+    ]
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["recommendation"] != "promote"

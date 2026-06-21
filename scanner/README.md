@@ -6,6 +6,7 @@ Local Windows Python scanner that identifies Potter Box-style options setups and
 - Dry-run is default.
 - Fail closed on missing/uncertain data.
 - Live alerting requires both `--mode live` and `LIVE_MODE_ENABLED=true`.
+- Live alerting also requires a current Edge Readiness Audit with `readiness=paper_trade_only`; run `--mode run_edge_lab` first.
 - Secrets are loaded from `.env` only (do not hardcode keys/tokens in code).
 
 ## Setup
@@ -22,6 +23,7 @@ ALPACA_API_KEY=your_key
 ALPACA_SECRET_KEY=your_secret
 MARKET_DATA_PROVIDER=auto
 ALPACA_FEED=iex
+ALPACA_OPTIONS_FEED=indicative
 MINIMAX_ENABLED=false
 MINIMAX_API_KEY=your_key
 MINIMAX_BASE_URL=https://api.minimax.io/v1
@@ -32,6 +34,9 @@ Provider behavior:
 - `MARKET_DATA_PROVIDER=auto`: Alpaca first, then yfinance fallback.
 - `MARKET_DATA_PROVIDER=alpaca`: Alpaca only (fails if unavailable).
 - `MARKET_DATA_PROVIDER=yfinance`: yfinance only.
+- Current scans use `ALPACA_FEED` (`iex` on the Basic plan).
+- Historical index building and `research_scan` request SIP data with a 16-minute delay, which fits Alpaca Basic's delayed consolidated-data access.
+- Options selection joins Alpaca indicative snapshots for quotes, volume, IV, and Greeks availability with yfinance open interest. This improves research evidence but remains below execution-grade OPRA quality.
 
 ## Modes
 ```bat
@@ -56,6 +61,8 @@ scanner\run_scanner.bat --mode edge_scan
 scanner\run_scanner.bat --mode diagnose_edge
 scanner\run_scanner.bat --mode audit_edge
 scanner\run_scanner.bat --mode run_edge_lab
+scanner\run_scanner.bat --mode research_ops
+scanner\run_scanner.bat --mode doctor
 ```
 
 Equivalent Python commands:
@@ -66,6 +73,14 @@ Equivalent Python commands:
 .\venv\Scripts\python.exe -m scanner.main --mode calibration --ticker PLTR --tradingview_csv C:\path\to\tradingview_export.csv
 .\venv\Scripts\python.exe -m scanner.main --mode calibration --calibration_csv_glob "C:\Users\Jacob Higgins\Downloads\BATS_*, 1D.csv" --sweep_anchors
 .\venv\Scripts\python.exe -m scanner.main --mode run_edge_lab
+.\venv\Scripts\python.exe -m scanner.main --mode doctor
+```
+
+## Project Doctor
+`doctor` is a no-secrets health report for local review. It verifies the Python version, core runtime imports, and whether secret/runtime artifact paths are ignored by Git. Use it before demos, handoffs, or deeper evidence-lab runs:
+
+```bat
+.\venv\Scripts\python.exe -m scanner.main --mode doctor
 ```
 
 ## What Is Logged
@@ -94,6 +109,15 @@ Edge validation uses purged walk-forward analogs: historical candidates are scor
 
 Research recommendations are gated by live setup quality. Strong historical analogs cannot promote or research-label a candidate when both Potter Box and Empty Space gates fail.
 
+## Research Operations
+`research_ops` is the repeatable evidence-maintenance cycle. It backs up and deduplicates the decision journal, resolves aged outcomes, collects a fresh delayed-SIP research scan, runs diagnostics and bounded autotuning, refreshes the complete edge lab, and writes `scanner\reports\research_ops_report.json`.
+
+```bat
+.\venv\Scripts\python.exe -m scanner.main --mode research_ops
+```
+
+The decision journal rejects repeat observations of the same ticker/setup/day so repeated scans cannot inflate sample counts or bias autotuning.
+
 ## Edge Readiness Audit
 `audit_edge` summarizes whether the current evidence is usable, research-only, or blocked. It checks:
 - Purged walk-forward validation is enabled and future analogs are blocked.
@@ -101,6 +125,8 @@ Research recommendations are gated by live setup quality. Strong historical anal
 - Current candidates have usable feed confidence and non-missing options liquidity fields.
 
 The audit is intentionally conservative. Free IEX-only market data and indicative or missing options data are useful for research, but they should not be treated as capital-ready evidence without better coverage and liquidity checks.
+
+The free-data ensemble records stock provider/feed/delay plus option provider/feed/quote age. Indicative options receive a quality penalty and cannot produce a `promote` recommendation; real-time OPRA-quality options data is required for promotion.
 
 ## Self-Tuning Loop
 1. Run scanner (`dry_run` or `live`) so decisions are logged.
@@ -149,7 +175,8 @@ Research mode:
 
 ## Before Enabling Live Alerts
 1. Rotate Telegram bot token and update `.env`.
-2. Run `--mode dry_run` and verify ticker-by-ticker logs.
-3. Run both backtests and inspect `reports\*.json`.
-4. Run calibration with TradingView CSV and review mismatch report.
-5. Set `LIVE_MODE_ENABLED=true` only after verification.
+2. Run `--mode run_edge_lab` and verify `scanner\reports\edge_audit_report.json` reports `readiness=paper_trade_only`.
+3. Run `--mode dry_run` and verify ticker-by-ticker logs.
+4. Run both backtests and inspect `reports\*.json`.
+5. Run calibration with TradingView CSV and review mismatch report.
+6. Set `LIVE_MODE_ENABLED=true` only after verification.

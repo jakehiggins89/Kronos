@@ -7,8 +7,10 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +55,7 @@ from .config import (
 from .data.events import assess_event_risk
 from .data.market_data import fetch_daily_bars, fetch_intraday_bars, validate_ticker
 from .data.options_data import select_options_contract
+from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
 from .edge.audit import compute_edge_audit_report
 from .edge.features import extract_edge_features
@@ -62,7 +65,7 @@ from .edge.validation import compute_edge_validation_report
 from .evidence.store import EvidenceRun, start_evidence_run
 from .learning.autotuner import apply_overrides, propose_overrides
 from .learning.outcome_reviewer import review_pending_outcomes
-from .learning.outcome_store import append_decision, load_decisions, save_decisions
+from .learning.outcome_store import DECISIONS_PATH, append_decision, deduplicate_decisions, load_decisions, save_decisions
 from .learning.replay_runner import run_replay_eval
 from .models.kronos_adapter import KronosAdapter
 from .strategy.empty_space import score_empty_space
@@ -75,6 +78,38 @@ ENV_PATHS = (
     Path(__file__).resolve().parents[1] / ".env",
     Path(__file__).resolve().parent / ".env",
 )
+
+
+def _utc_now_iso() -> str:
+    return pd.Timestamp.utcnow().isoformat()
+
+
+def _monotonic_seconds() -> float:
+    return time.monotonic()
+
+
+def _elapsed_seconds(start: float, end: float | None = None) -> float:
+    current = _monotonic_seconds() if end is None else end
+    return round(current - start, 3)
+
+
+def _run_timed_stage(name: str, logger, func):
+    started_at = _utc_now_iso()
+    start = _monotonic_seconds()
+    logger.info("STAGE_START: %s", name)
+    try:
+        result = func()
+    except Exception:
+        logger.exception("STAGE_FAILED: %s duration_seconds=%.3f", name, _elapsed_seconds(start))
+        raise
+    completed_at = _utc_now_iso()
+    duration = _elapsed_seconds(start)
+    logger.info("STAGE_DONE: %s duration_seconds=%.3f", name, duration)
+    return result, {
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_seconds": duration,
+    }
 
 
 def _resolve_calibrated_anchor(ticker: str) -> tuple[int, int]:
@@ -121,6 +156,8 @@ def parse_args() -> argparse.Namespace:
             "diagnose_edge",
             "audit_edge",
             "run_edge_lab",
+            "research_ops",
+            "doctor",
         ],
         default="dry_run" if DRY_RUN_DEFAULT else "live",
     )
@@ -171,6 +208,15 @@ def _load_env() -> dict:
 
 def _log_skip(logger, ticker: str, reason: str):
     logger.info("SKIP: %s %s", ticker, reason)
+
+
+def _data_provenance(bars: pd.DataFrame | None) -> dict:
+    attrs = getattr(bars, "attrs", {}) if bars is not None else {}
+    return {
+        "data_provider": attrs.get("data_provider"),
+        "data_feed": attrs.get("data_feed"),
+        "data_delay_minutes": int(attrs.get("data_delay_minutes", 0) or 0),
+    }
 
 
 def _infer_direction_for_counterfactual(pb) -> str | None:
@@ -243,6 +289,25 @@ def _preflight_checks(mode: str, env: dict, logger) -> bool:
     if mode == "live" and not env["live_mode_enabled"]:
         logger.error("Preflight failed: LIVE_MODE_ENABLED must be true for live mode.")
         return False
+    if mode == "live":
+        try:
+            audit = json.loads(EDGE_AUDIT_REPORT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            logger.error(
+                "Preflight failed: live mode requires a current edge audit. "
+                "Run --mode run_edge_lab and inspect %s first.",
+                EDGE_AUDIT_REPORT_PATH,
+            )
+            return False
+        readiness = str(audit.get("readiness", "")).strip().lower()
+        if readiness != "paper_trade_only":
+            logger.error(
+                "Preflight failed: edge audit readiness=%s is not live-eligible. blockers=%s warnings=%s",
+                readiness or "missing",
+                audit.get("blockers", []),
+                audit.get("warnings", []),
+            )
+            return False
     if mode == "test_minimax" and not env["minimax_api_key"]:
         logger.error("Preflight failed: MINIMAX_API_KEY missing for test_minimax mode.")
         return False
@@ -303,7 +368,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
 
     try:
         anchor_hour, anchor_minute = _resolve_calibrated_anchor(ticker)
-        intraday = fetch_intraday_bars(ticker)
+        intraday = fetch_intraday_bars(ticker, research=mode == "research_scan")
         synthetic, synth_diag = build_synthetic_sessions(
             intraday_df=intraday,
             session_anchor_hour=anchor_hour,
@@ -311,6 +376,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
             source_interval="30m",
             prepost_enabled=True,
         )
+        base_record.update(_data_provenance(intraday))
     except Exception as exc:
         rec = {
             **base_record,
@@ -780,8 +846,11 @@ def _edge_data_quality(
     alpaca_credentials_available: bool | None = None,
     now: pd.Timestamp | None = None,
 ) -> dict:
-    provider_choice = (provider or os.getenv("MARKET_DATA_PROVIDER", MARKET_DATA_PROVIDER_DEFAULT)).strip().lower()
-    feed = (alpaca_feed or os.getenv("ALPACA_FEED", ALPACA_FEED)).strip().lower() or "iex"
+    attrs = getattr(bars, "attrs", {}) if bars is not None else {}
+    provider_choice = (
+        provider or attrs.get("data_provider") or os.getenv("MARKET_DATA_PROVIDER", MARKET_DATA_PROVIDER_DEFAULT)
+    ).strip().lower()
+    feed = (alpaca_feed or attrs.get("data_feed") or os.getenv("ALPACA_FEED", ALPACA_FEED)).strip().lower() or "iex"
     has_alpaca_credentials = (
         bool(os.getenv("ALPACA_API_KEY", "").strip() and os.getenv("ALPACA_SECRET_KEY", "").strip())
         if alpaca_credentials_available is None
@@ -826,6 +895,7 @@ def _edge_data_quality(
         "stale_minutes": stale_minutes,
         "provider": effective_provider,
         "feed": feed if effective_provider == "alpaca" else None,
+        "delay_minutes": int(attrs.get("data_delay_minutes", 0) or 0),
     }
 
 
@@ -958,7 +1028,7 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
     errors: dict[str, str] = {}
     for ticker in watchlist:
         try:
-            daily = fetch_daily_bars(ticker)
+            daily = fetch_daily_bars(ticker, research=True)
             records.extend(build_edge_records_from_bars(ticker, daily, horizon=PRED_DAYS))
         except Exception as exc:
             errors[ticker] = str(exc)
@@ -1041,23 +1111,45 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
 
 
 def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None = None) -> dict:
+    started_at = _utc_now_iso()
+    scan_start = _monotonic_seconds()
+    scan_end = scan_start
     records = load_edge_index(EDGE_INDEX_PATH)
     analog_index = EdgeAnalogIndex(records)
     candidates = []
+    ticker_timings = []
     for ticker in watchlist:
+        ticker_start = _monotonic_seconds()
+        logger.info("EDGE_SCAN_TICKER_START: %s", ticker)
         try:
             anchor_hour, anchor_minute = _resolve_calibrated_anchor(ticker)
             intraday = fetch_intraday_bars(ticker)
             synthetic, _ = build_synthetic_sessions(intraday, anchor_hour, anchor_minute, "30m", True)
-            candidates.append(_score_edge_for_bars(ticker, synthetic, analog_index, logger))
+            result = _score_edge_for_bars(ticker, synthetic, analog_index, logger)
         except Exception as exc:
             logger.warning("EDGE_SCAN_ERROR: %s %s", ticker, exc)
-            candidates.append({"ticker": ticker, "status": "error", "reason": str(exc)})
+            result = {"ticker": ticker, "status": "error", "reason": str(exc)}
+        scan_end = _monotonic_seconds()
+        candidates.append(result)
+        duration = _elapsed_seconds(ticker_start, scan_end)
+        ticker_timings.append(
+            {
+                "ticker": ticker,
+                "status": str(result.get("recommendation") or result.get("status", "unknown")),
+                "duration_seconds": duration,
+            }
+        )
+        logger.info("EDGE_SCAN_TICKER_DONE: %s status=%s duration_seconds=%.3f", ticker, ticker_timings[-1]["status"], duration)
     ranked = sorted(candidates, key=lambda row: float(row.get("edge_score", 0.0)), reverse=True)
+    completed_at = _utc_now_iso()
     payload = {
         "mode": "edge_scan",
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_seconds": _elapsed_seconds(scan_start, scan_end),
         "index_records": len(records),
         "total": len(ranked),
+        "ticker_timings": ticker_timings,
         "candidates": ranked,
     }
     if evidence_run is not None:
@@ -1157,6 +1249,121 @@ def run_edge_lab(watchlist: list[str], logger) -> dict:
         "audit": audit_report,
     }
     logger.info("EDGE_LAB_REPORT: %s", json.dumps(payload))
+    return payload
+
+
+def run_watchlist_scan(watchlist: list[str], mode: str, env: dict, logger) -> dict:
+    started_at = _utc_now_iso()
+    scan_start = _monotonic_seconds()
+    scan_end = scan_start
+    kronos = KronosAdapter(logger)
+    minimax = MiniMaxAdapter(logger)
+    results = []
+    ticker_timings = []
+    for ticker in watchlist:
+        ticker_start = _monotonic_seconds()
+        logger.info("SCAN_TICKER_START: %s mode=%s", ticker, mode)
+        try:
+            result = _run_single_ticker(ticker, mode, env, kronos, minimax, logger)
+        except Exception as exc:
+            logger.error("ERROR: %s unhandled ticker exception: %s", ticker, exc)
+            result = {"ticker": ticker, "status": "error", "reason": str(exc)}
+        scan_end = _monotonic_seconds()
+        results.append(result)
+        duration = _elapsed_seconds(ticker_start, scan_end)
+        ticker_timings.append(
+            {
+                "ticker": ticker,
+                "status": result["status"],
+                "duration_seconds": duration,
+            }
+        )
+        logger.info("SCAN_TICKER_DONE: %s status=%s duration_seconds=%.3f", ticker, result["status"], duration)
+    completed_at = _utc_now_iso()
+    summary = {
+        "mode": mode,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_seconds": _elapsed_seconds(scan_start, scan_end),
+        "total": len(results),
+        "pass": sum(1 for row in results if row["status"] == "pass"),
+        "skip": sum(1 for row in results if row["status"] == "skip"),
+        "error": sum(1 for row in results if row["status"] == "error"),
+        "ticker_timings": ticker_timings,
+    }
+    logger.info("SCAN_SUMMARY: %s", json.dumps(summary))
+    return summary
+
+
+def _research_next_actions(audit: dict, autotune: dict) -> list[str]:
+    actions = []
+    if audit.get("readiness") != "paper_trade_only":
+        actions.append("keep_live_disabled")
+    warnings = set(audit.get("warnings", []))
+    if "no_current_actionable_candidates" in warnings:
+        actions.append("continue_daily_research_scan")
+    if "options_liquidity_missing" in warnings or "options_data_not_execution_grade" in warnings:
+        actions.append("collect_better_options_truth_data")
+    if autotune.get("status") == "hold_no_edge":
+        actions.append("do_not_loosen_thresholds")
+    return actions
+
+
+def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
+    started_at = _utc_now_iso()
+    run_start = _monotonic_seconds()
+    stages = {}
+
+    def timed(name: str, func):
+        result, meta = _run_timed_stage(name, logger, func)
+        stages[name] = meta
+        return result
+
+    def prepare_journal():
+        rows = load_decisions()
+        clean_rows, dedupe_report = deduplicate_decisions(rows)
+        if dedupe_report["duplicates_removed"] and DECISIONS_PATH.exists():
+            backup = REPORT_DIR / f"scan_decisions_backup_{datetime.now().strftime('%Y%m%dT%H%M%S')}.jsonl"
+            shutil.copy2(DECISIONS_PATH, backup)
+            dedupe_report["backup_path"] = str(backup.resolve())
+        save_decisions(clean_rows)
+        return clean_rows, dedupe_report
+
+    clean_rows, dedupe_report = timed("journal_integrity", prepare_journal)
+
+    def review_outcomes():
+        reviewed_rows, review_summary = review_pending_outcomes(clean_rows, logger)
+        save_decisions(reviewed_rows)
+        return review_summary
+
+    review_summary = timed("outcome_review", review_outcomes)
+    research_summary = timed("research_scan", lambda: run_watchlist_scan(watchlist, "research_scan", env, logger))
+    diagnostic = timed("diagnostic", lambda: _write_zero_result_diagnostic(logger))
+    autotune = timed("autotune", lambda: propose_overrides(load_decisions()))
+    edge_lab = timed("edge_lab", lambda: run_edge_lab(watchlist, logger))
+    audit = edge_lab.get("audit", {})
+    completed_at = _utc_now_iso()
+    payload = {
+        "mode": "research_ops",
+        "generated_at": completed_at,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_seconds": _elapsed_seconds(run_start),
+        "stages": stages,
+        "journal_integrity": dedupe_report,
+        "outcome_review": review_summary,
+        "research_scan": research_summary,
+        "diagnostic": diagnostic,
+        "autotune": autotune,
+        "edge_run_id": edge_lab.get("run_id"),
+        "edge_readiness": audit,
+        "next_actions": _research_next_actions(audit, autotune),
+    }
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORT_DIR / "research_ops_report.json"
+    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("RESEARCH_OPS_REPORT: %s", json.dumps(payload))
+    logger.info("Research operations report saved: %s", str(report_path.resolve()))
     return payload
 
 
@@ -1260,27 +1467,16 @@ def main() -> int:
     if args.mode == "run_edge_lab":
         run_edge_lab(WATCHLIST, logger)
         return 0
+    if args.mode == "research_ops":
+        run_research_ops(WATCHLIST, env, logger)
+        return 0
+    if args.mode == "doctor":
+        report = run_doctor()
+        logger.info("DOCTOR_REPORT: %s", json.dumps(report))
+        return 0 if report.get("status") == "ok" else 1
 
     # dry_run, research_scan, or live scan path
-    kronos = KronosAdapter(logger)
-    minimax = MiniMaxAdapter(logger)
-    results = []
-    for ticker in WATCHLIST:
-        try:
-            result = _run_single_ticker(ticker, args.mode, env, kronos, minimax, logger)
-        except Exception as exc:
-            logger.error("ERROR: %s unhandled ticker exception: %s", ticker, exc)
-            result = {"ticker": ticker, "status": "error", "reason": str(exc)}
-        results.append(result)
-
-    summary = {
-        "mode": args.mode,
-        "total": len(results),
-        "pass": sum(1 for r in results if r["status"] == "pass"),
-        "skip": sum(1 for r in results if r["status"] == "skip"),
-        "error": sum(1 for r in results if r["status"] == "error"),
-    }
-    logger.info("SCAN_SUMMARY: %s", json.dumps(summary))
+    summary = run_watchlist_scan(WATCHLIST, args.mode, env, logger)
     if args.mode == "dry_run" and summary["pass"] == 0:
         logger.info("DRY_RUN_ALERT_TEMPLATE:\n%s", _sample_alert_template())
     return 0

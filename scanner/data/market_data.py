@@ -101,14 +101,22 @@ def _interval_to_alpaca(interval: str) -> str:
     return mapping[interval]
 
 
-def _fetch_alpaca_bars(ticker: str, interval: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+def _fetch_alpaca_bars(
+    ticker: str,
+    interval: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    feed: str | None = None,
+    delay_minutes: int = 0,
+) -> pd.DataFrame:
     key, secret = _alpaca_credentials()
     if not key or not secret:
         raise RuntimeError("missing Alpaca credentials")
 
     timeframe = _interval_to_alpaca(interval)
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    feed = os.getenv("ALPACA_FEED", ALPACA_FEED).strip().lower() or "iex"
+    feed = (feed or os.getenv("ALPACA_FEED", ALPACA_FEED)).strip().lower() or "iex"
     base_url = "https://data.alpaca.markets/v2/stocks"
     url = f"{base_url}/{ticker}/bars"
 
@@ -144,7 +152,15 @@ def _fetch_alpaca_bars(ticker: str, interval: str, start: pd.Timestamp, end: pd.
     df = df.rename(columns={"t": "timestamp", "o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     df = df.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
-    return _to_ny_index(df[["Open", "High", "Low", "Close", "Volume"]])
+    result = _to_ny_index(df[["Open", "High", "Low", "Close", "Volume"]])
+    result.attrs.update(
+        {
+            "data_provider": "alpaca",
+            "data_feed": feed,
+            "data_delay_minutes": int(delay_minutes),
+        }
+    )
+    return result
 
 
 def validate_ticker(ticker: str, logger: logging.Logger) -> TickerValidationResult:
@@ -224,14 +240,34 @@ def validate_ticker(ticker: str, logger: logging.Logger) -> TickerValidationResu
         )
 
 
-def fetch_intraday_bars(ticker: str, interval: str = INTRADAY_INTERVAL, period: str = INTRADAY_LOOKBACK) -> pd.DataFrame:
+def fetch_intraday_bars(
+    ticker: str,
+    interval: str = INTRADAY_INTERVAL,
+    period: str = INTRADAY_LOOKBACK,
+    *,
+    research: bool = False,
+    now: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     provider = _provider_choice()
     if provider in {"auto", "alpaca"} and _alpaca_enabled():
         try:
             days = int(period.rstrip("d")) if period.endswith("d") else 60
-            end = pd.Timestamp.now(tz=TIMEZONE)
+            end = pd.Timestamp.now(tz=TIMEZONE) if now is None else pd.Timestamp(now)
+            delay_minutes = 16 if research else 0
+            if delay_minutes:
+                end -= pd.Timedelta(minutes=delay_minutes)
             start = end - pd.Timedelta(days=days + 5)
-            return _fetch_alpaca_bars(ticker=ticker, interval=interval, start=start, end=end)
+            feed = "sip" if research else (os.getenv("ALPACA_FEED", ALPACA_FEED).strip().lower() or "iex")
+            result = _fetch_alpaca_bars(
+                ticker=ticker,
+                interval=interval,
+                start=start,
+                end=end,
+                feed=feed,
+                delay_minutes=delay_minutes,
+            )
+            result.attrs.update({"data_provider": "alpaca", "data_feed": feed, "data_delay_minutes": delay_minutes})
+            return result
         except Exception:
             if provider == "alpaca":
                 raise
@@ -247,17 +283,30 @@ def fetch_intraday_bars(ticker: str, interval: str = INTRADAY_INTERVAL, period: 
     )
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis=1)
-    return _to_ny_index(data)
+    result = _to_ny_index(data)
+    result.attrs.update({"data_provider": "yfinance", "data_feed": None, "data_delay_minutes": 0})
+    return result
 
 
-def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK) -> pd.DataFrame:
+def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK, *, research: bool = False) -> pd.DataFrame:
     provider = _provider_choice()
     if provider in {"auto", "alpaca"} and _alpaca_enabled():
         try:
             years = int(period.rstrip("y")) if period.endswith("y") else 2
             end = pd.Timestamp.now(tz=TIMEZONE)
             start = end - pd.Timedelta(days=365 * years + 10)
-            return _fetch_alpaca_bars(ticker=ticker, interval="1d", start=start, end=end)
+            delay_minutes = 16 if research else 0
+            if delay_minutes:
+                end -= pd.Timedelta(minutes=delay_minutes)
+            feed = "sip" if research else (os.getenv("ALPACA_FEED", ALPACA_FEED).strip().lower() or "iex")
+            return _fetch_alpaca_bars(
+                ticker=ticker,
+                interval="1d",
+                start=start,
+                end=end,
+                feed=feed,
+                delay_minutes=delay_minutes,
+            )
         except Exception:
             if provider == "alpaca":
                 raise
@@ -273,7 +322,9 @@ def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK) -> pd.Data
     )
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis=1)
-    return _to_ny_index(data)
+    result = _to_ny_index(data)
+    result.attrs.update({"data_provider": "yfinance", "data_feed": None, "data_delay_minutes": 0})
+    return result
 
 
 def compute_future_timestamps(last_ts: pd.Timestamp, periods: int) -> pd.DatetimeIndex:

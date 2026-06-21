@@ -31,3 +31,32 @@ def test_extract_edge_features_has_stable_numeric_fields():
     assert features["breakout_distance_pct"] > 0
     assert features["volume_expansion"] > 1
     assert "feature_version" in features
+
+
+def test_extract_edge_features_records_option_provenance():
+    bars = _bars()
+    pb = detect_potter_box("TEST", bars)
+    options = {
+        "passed": True,
+        "spread_pct": 0.05,
+        "open_interest": 700,
+        "volume": 80,
+        "data_provider": "alpaca+yfinance",
+        "data_feed": "indicative",
+        "quote_age_minutes": 4.0,
+        "options_data_quality": 0.6,
+    }
+    data_quality = {
+        "provider": "alpaca",
+        "feed": "sip",
+        "delay_minutes": 16,
+        "feed_confidence": 0.9,
+    }
+
+    features = extract_edge_features("TEST", bars, pb, options_contract=options, data_quality=data_quality)
+
+    assert features["options_data_provider"] == "alpaca+yfinance"
+    assert features["options_data_feed"] == "indicative"
+    assert features["options_quote_age_minutes"] == 4.0
+    assert features["options_data_quality"] == 0.6
+    assert features["data_delay_minutes"] == 16.0

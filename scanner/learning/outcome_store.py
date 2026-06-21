@@ -11,12 +11,57 @@ from ..config import REPORT_DIR
 DECISIONS_PATH = REPORT_DIR / "scan_decisions.jsonl"
 
 
-def append_decision(record: dict):
+def decision_fingerprint(record: dict) -> str:
+    decision_ts = str(record.get("decision_ts") or record.get("created_at") or "")
+    decision_day = decision_ts[:10]
+    try:
+        entry_price = round(float(record.get("entry_price") or 0.0), 4)
+    except (TypeError, ValueError):
+        entry_price = 0.0
+    parts = (
+        str(record.get("ticker") or "").upper(),
+        str(record.get("mode") or ""),
+        str(record.get("direction") or ""),
+        f"{entry_price:.4f}",
+        str(record.get("stage_failed") or "passed_all"),
+        decision_day,
+    )
+    return "|".join(parts)
+
+
+def _record_rank(record: dict) -> tuple[int, int]:
+    status_rank = {"resolved": 3, "pending": 2, "not_applicable": 1}
+    populated = sum(value is not None and value != "" for value in record.values())
+    return status_rank.get(str(record.get("outcome_status")), 0), populated
+
+
+def deduplicate_decisions(records: Iterable[dict]) -> tuple[list[dict], dict]:
+    rows = list(records)
+    selected: dict[str, tuple[int, dict]] = {}
+    for index, record in enumerate(rows):
+        payload = dict(record)
+        fingerprint = decision_fingerprint(payload)
+        existing = selected.get(fingerprint)
+        if existing is None or _record_rank(payload) > _record_rank(existing[1]):
+            selected[fingerprint] = (index, payload)
+    clean = [payload for _index, payload in sorted(selected.values(), key=lambda item: item[0])]
+    return clean, {
+        "input_records": len(rows),
+        "unique_records": len(clean),
+        "duplicates_removed": max(0, len(rows) - len(clean)),
+    }
+
+
+def append_decision(record: dict) -> bool:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     payload = dict(record)
     payload.setdefault("created_at", pd.Timestamp.utcnow().isoformat())
+    fingerprint = decision_fingerprint(payload)
+    if any(decision_fingerprint(existing) == fingerprint for existing in load_decisions()):
+        return False
     with DECISIONS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return True
 
 
 def load_decisions() -> list[dict]:

@@ -54,6 +54,7 @@ def build_synthetic_sessions(
 
     idx = pd.DatetimeIndex(synthetic.index)
     synthetic.index = idx.tz_localize(df.index.tz) if idx.tz is None else idx.tz_convert(df.index.tz)
+    synthetic.attrs.update(intraday_df.attrs)
 
     diagnostics = {
         "source_interval": source_interval,

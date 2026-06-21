@@ -165,6 +165,11 @@ def extract_edge_features(
         "options_spread_pct": _finite_float(opt.get("spread_pct"), 1.0 if opt else 0.0),
         "options_open_interest": _finite_float(opt.get("open_interest")),
         "options_volume": _finite_float(opt.get("volume")),
+        "options_data_provider": opt.get("data_provider"),
+        "options_data_feed": opt.get("data_feed"),
+        "options_quote_age_minutes": _finite_float(opt.get("quote_age_minutes"), 9999.0 if opt else 0.0),
+        "options_source_disagreement_pct": _finite_float(opt.get("source_disagreement_pct")),
+        "options_data_quality": _finite_float(opt.get("options_data_quality"), 0.45 if opt else 0.0),
         "kronos_directional_agreement": _finite_float(kr.get("directional_agreement")),
         "kronos_median_forecast_return_pct": _finite_float(kr.get("median_forecast_return_pct")),
         "kronos_worst_sampled_return_pct": _finite_float(kr.get("worst_sampled_return_pct")),
@@ -175,5 +180,6 @@ def extract_edge_features(
         "feed_confidence": _finite_float(dq.get("feed_confidence"), 0.5),
         "data_provider": dq.get("provider"),
         "data_feed": dq.get("feed"),
+        "data_delay_minutes": _finite_float(dq.get("delay_minutes")),
         "skip_reason": pb.get("skip_reason") or es.get("skip_reason") or ev.get("skip_reason") or opt.get("skip_reason"),
     }
