@@ -9,7 +9,7 @@ description = "Local Kronos forecasting app and Potter Box scanner."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
+    "numpy==2.4.6",
     "pandas==2.2.2",
     "torch==2.7.0",
     "einops==0.8.1",
@@ -18,16 +18,16 @@ dependencies = [
     "tqdm==4.67.1",
     "safetensors==0.6.2",
     "flask==2.3.3",
-    "flask-cors==4.0.0",
-    "plotly==5.17.0",
+    "flask-cors==6.0.2",
+    "plotly==6.7.0",
     "python-dotenv>=1.0.1",
     "requests>=2.32.0",
     "streamlit",
-    "yfinance>=0.2.54",
+    "yfinance==1.2.1",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.2.0"]
+test = ["pytest==9.0.3"]
 evidence = ["pyarrow>=16.0.0"]
 
 [tool.setuptools.packages.find]

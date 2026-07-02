@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Fork note — three products, one repo.** This README documents the upstream Kronos research model only. The active local products are the desktop forecasting app ([README_JAKE.md](README_JAKE.md)) and the fail-closed Potter Box scanner / evidence lab ([scanner/README.md](scanner/README.md) — the live docs). Start at [REPO_MAP.md](REPO_MAP.md).
+
 <div align="center">
   <h2><b>Kronos: A Foundation Model for the Language of Financial Markets </b></h2>
 </div>

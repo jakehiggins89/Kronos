@@ -1,7 +1,21 @@
-# Kronos Financial Predictor
+# Kronos Financial Predictor (Desktop App)
 
 **One-click AI market forecasting on your desktop.**
-Model: NeoQuasar/Kronos-base (102.3M params) | GPU: RTX 5060 Ti | CUDA 13.2
+Model: NeoQuasar/Kronos-base (102.3M params) | Runs CPU-only (PyTorch 2.7.0+cpu) — a GPU is used automatically only if a CUDA torch build is installed
+
+---
+
+## What's in this repo
+
+Three products share this repo — this file covers only the desktop forecasting app:
+
+| Product | Docs |
+|---------|------|
+| Upstream Kronos model (`model/`) | [README.md](README.md) |
+| **Desktop forecasting app** (`kronos_app.py`) | this file |
+| Potter Box scanner / evidence lab (`scanner/`) — the active project | [scanner/README.md](scanner/README.md) (live docs) |
+
+Full orientation: [REPO_MAP.md](REPO_MAP.md)
 
 ---
 
@@ -37,7 +51,7 @@ The browser opens automatically at http://localhost:8501
 - `kronos_app.py` — main Streamlit app
 - `launch_kronos.bat` — launcher (what the shortcut calls)
 - `model/` — Kronos model code
-- `venv/` — isolated Python environment (PyTorch 2.11+cu128)
+- `venv/` — isolated Python environment (Python 3.12, PyTorch 2.7.0+cpu — CPU-only)
 
 ---
 
@@ -49,6 +63,6 @@ Models download automatically on first run (~500MB) and are cached at:
 
 ## Troubleshooting
 - **App won't start**: Run `launch_kronos.bat` directly to see error output
-- **CUDA out of memory**: Switch to "Force CPU" in sidebar (slower but works)
+- **Slow forecasts**: Inference is CPU-only in the current venv — reduce sample paths or prediction bars. (The old "CUDA out of memory" advice no longer applies; no CUDA torch is installed.)
 - **Ticker not found**: Use Yahoo Finance ticker format (e.g. BTC-USD not BTCUSDT)
 - **Stale data**: Yahoo Finance delays some data 15 minutes for free tier

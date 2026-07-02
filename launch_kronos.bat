@@ -9,7 +9,7 @@ set STREAMLIT=%PROJ%\venv\Scripts\streamlit.exe
 echo ============================================
 echo   KRONOS FINANCIAL PREDICTOR
 echo   Powered by NeoQuasar/Kronos-base
-echo   RTX 5060 Ti / CUDA 13.2
+echo   PyTorch 2.7.0+cpu - CPU inference
 echo ============================================
 echo.
 

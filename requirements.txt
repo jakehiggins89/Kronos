@@ -1,6 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-numpy
+numpy==2.4.6
 pandas==2.2.2
 torch==2.7.0+cpu
 
@@ -11,9 +11,9 @@ tqdm==4.67.1
 safetensors==0.6.2
 
 flask==2.3.3
-flask-cors==4.0.0
-plotly==5.17.0
+flask-cors==6.0.2
+plotly==6.7.0
 python-dotenv>=1.0.1
 requests>=2.32.0
 streamlit
-yfinance>=0.2.54
+yfinance==1.2.1

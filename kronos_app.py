@@ -246,7 +246,7 @@ with st.sidebar:
 
 # ── Main content area ────────────────────────────────────────────────────────
 st.markdown('<div class="main-header">📈 Kronos Financial Predictor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Powered by NeoQuasar/Kronos-base · RTX 5060 Ti · CUDA 13.2</div>',
+st.markdown('<div class="sub-header">Powered by NeoQuasar/Kronos-base</div>',
             unsafe_allow_html=True)
 
 # GPU status badge
