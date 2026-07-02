@@ -213,6 +213,10 @@ def _select_via_tradier(
                 ask = float(row.get("ask") or 0.0)
             except (TypeError, ValueError):
                 continue
+            if not (strike > 0) or bid <= 0 or ask <= bid:
+                # Unquotable rows can't anchor the ATM pick; a dead nearest
+                # strike should not disqualify the whole expiration.
+                continue
             candidates.append((abs(strike - breakout_price), -float(row.get("open_interest") or 0), row, strike, bid, ask))
         if not candidates:
             continue
@@ -221,8 +225,6 @@ def _select_via_tradier(
 
         open_interest = int(row.get("open_interest") or 0)
         volume = int(row.get("volume") or 0)
-        if bid <= 0 or ask <= bid:
-            continue
         spread = _spread_pct(bid, ask)
         if spread > scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT:
             continue

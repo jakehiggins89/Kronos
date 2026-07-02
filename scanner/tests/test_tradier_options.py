@@ -157,6 +157,20 @@ def test_tradier_single_item_payload_collapse(monkeypatch):
     assert result.strike == 10.0
 
 
+def test_dead_nearest_strike_does_not_disqualify_expiration(monkeypatch):
+    rows = [
+        _chain_row(strike=10.0, bid=0.0, ask=0.0),  # ATM but unquotable
+        _chain_row(strike=10.5, bid=1.8, ask=1.85, oi=4000),
+    ]
+    _patch_tradier(monkeypatch, rows)
+    _block_yfinance(monkeypatch)
+
+    result = options_data.select_options_contract("TEST", "bullish", 10.1, logging.getLogger("test"))
+
+    assert result.passed is True
+    assert result.strike == 10.5
+
+
 def test_tradier_bearish_selects_puts(monkeypatch):
     rows = [
         _chain_row(strike=10.0, option_type="call"),
