@@ -64,6 +64,7 @@ scanner\run_scanner.bat --mode diagnose_edge
 scanner\run_scanner.bat --mode audit_edge
 scanner\run_scanner.bat --mode run_edge_lab
 scanner\run_scanner.bat --mode research_ops
+scanner\run_scanner.bat --mode brief
 scanner\run_scanner.bat --mode doctor
 ```
 
@@ -77,6 +78,15 @@ Equivalent Python commands:
 .\venv\Scripts\python.exe -m scanner.main --mode run_edge_lab
 .\venv\Scripts\python.exe -m scanner.main --mode doctor
 ```
+
+## Daily Brief
+`brief` reads the latest report artifacts (no network, no model loads) and renders a verdict-first operator summary: evidence-gate progress, today's scan, learning-loop state including Kronos lift, every blocker in plain English with its fix, and the single next action. `research_ops` runs it automatically as its final stage.
+
+```bat
+.\venv\Scripts\python.exe -m scanner.main --mode brief
+```
+
+Output: printed to the console and saved at `scanner\reports\daily_brief.md`.
 
 ## Project Doctor
 `doctor` is a no-secrets health report for local review. It verifies the Python version, core runtime imports, and whether secret/runtime artifact paths are ignored by Git. Use it before demos, handoffs, or deeper evidence-lab runs:
@@ -98,6 +108,8 @@ Equivalent Python commands:
 - Edge Evidence Lab runs at `scanner\reports\evidence\<run_id>\manifest.json`.
 - Edge readiness audit at `scanner\reports\edge_audit_report.json`.
 - Adaptive policy report at `scanner\reports\adaptive_policy_report.json`.
+- Daily operator brief at `scanner\reports\daily_brief.md`.
+- Trial registry (every tuning change evaluated/applied) at `scanner\reports\trial_registry.jsonl`.
 
 ## Edge Evidence Lab
 `run_edge_lab` executes the full research loop in one local run:
@@ -109,6 +121,12 @@ Equivalent Python commands:
 Each lab run writes a manifest plus JSONL row artifacts for index records, validation candidates, scan candidates, metrics, and diagnostics. If a Parquet engine such as `pyarrow` is installed, matching `.parquet` sidecars are written automatically. If not, JSONL remains the canonical fallback. To enable Parquet sidecars, install the optional package extra with `.\venv\Scripts\python.exe -m pip install -e ".[evidence]"`.
 
 Edge validation uses purged walk-forward analogs: historical candidates are scored only against records available before that candidate timestamp. Current scans may use the full saved index, but validation reports mark `validation_method=purged_walk_forward` and `future_analogs_allowed=false`.
+
+How the evidence is measured (2026-07 revision):
+- The retrieval index is built from the watchlist plus `EDGE_INDEX_EXTRA_UNIVERSE` (index/validation only), and analogs match on a curated set of scale-free setup features with direction matching and a cross-ticker embargo during validation.
+- Historical outcomes are triple-barrier labeled (stop at -risk, target at +target, time exit at the horizon, evaluated against the High/Low path). A stopped-out trade is a loss even if price later recovers.
+- Validation samples the most recent `EDGE_VALIDATION_MAX_RECORDS` records by timestamp across all tickers, and reports Spearman rank IC over all samples, top-5/10/20% percentile blocks, decile spread, per-direction expectancy, Wilson lower-bound precision, and R-multiple t-stats.
+- The audit accepts either evidence route: the legacy absolute-threshold gate, or the ranking gate (rank IC >= 0.07 with p <= 0.05, plus a profitable top decile with >= 20 signals, t >= 2, Wilson-LB precision >= 0.45). Any direction with >= 15 validation samples and negative average R is flagged and cannot grant paper-trade readiness on its own promotions.
 
 Research recommendations are gated by live setup quality. Strong historical analogs cannot promote or research-label a candidate when both Potter Box and Empty Space gates fail.
 
@@ -148,6 +166,10 @@ The free-data ensemble records stock provider/feed/delay plus option provider/fe
 ## Adaptive Policy Loop
 `adaptive_policy` evaluates resolved research candidates by score threshold and outcome quality. It uses conservative win-rate confidence bounds and average return checks before recommending any improvement threshold. When the resolved research cohort is loss-heavy, it may safely tighten `RESEARCH_CANDIDATE_MIN_SCORE`; it does not loosen live gates or promote signals without evidence.
 
+The policy is two-sided with asymmetric safeguards. `RESEARCH_CANDIDATE_MIN_SCORE` is a data-collection throttle (research candidates are paper counterfactuals, never alerts), so a noise-driven tightening must not starve the journal forever. Loosening is recommended only when a lower threshold's cohort dominates the current one on conservative bounds (n >= 12, positive average return, Wilson LB >= 0.30, LB and return margins over the current cohort), capped at 10 points per change. Tightening applies immediately; loosening additionally requires a 7-day cooldown since the last automatic change plus a confirmation on a later calendar day. Every evaluated or applied change is appended to `scanner\reports\trial_registry.jsonl` so the multiple-testing trial count stays honest.
+
+The report also includes a `kronos_lift` section: resolved research candidates split by Kronos directional agreement (research candidates are evaluated by Kronos at scan time). This is the evidence that decides whether the Kronos confirmation stage earns its gate.
+
 The same report includes a `doctrine_v2` section with threshold cohorts, punchback-state outcomes, cost-basis-state outcomes, and risk flag counts. When Doctrine v2 evidence is loss-heavy at the current baseline, the safe auto-action is to raise `DOCTRINE_V2_SCORE_BASELINE`.
 
 ```bat
@@ -186,6 +208,12 @@ Research mode:
 .\venv\Scripts\python.exe -m scanner.main --mode backtest_daily_proxy_2y
 .\venv\Scripts\python.exe -m scanner.main --mode replay_eval --replay_dataset "C:\Users\Jacob Higgins\projects\kronos-predictor\scanner\replay\sample_replay_dataset.json"
 ```
+
+## Data Upgrade Paths (clears the audit's data warnings)
+The audit warnings `options_data_not_execution_grade`, `options_liquidity_missing`, and `low_feed_confidence` are data-subscription facts, not code bugs. Researched options (July 2026):
+- $0/mo: open a Tradier brokerage account. The production API token gives real-time OPRA-consolidated option chains with bid/ask, sizes, volume, and open interest (sandbox tokens are 15-min delayed; keep at least $2k or 2 trades/yr to avoid the $50 inactivity fee).
+- ~$29/mo: Tradier for options plus Polygon/Massive Stocks Starter for full-market delayed equity bars.
+- $99/mo (one-vendor): Alpaca Algo Trader Plus - full SIP equities plus the real-time OPRA options feed on the SDK already integrated (`feed="sip"` / `feed="opra"`).
 
 ## Limitations
 - Free Alpaca IEX feed is not full SIP coverage.
