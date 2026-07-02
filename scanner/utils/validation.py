@@ -84,6 +84,8 @@ class OptionsContractResult:
     greeks_available: bool | None = None
     source_disagreement_pct: float | None = None
     options_data_quality: float | None = None
+    bid_size: int | None = None
+    ask_size: int | None = None
 
 
 @dataclass

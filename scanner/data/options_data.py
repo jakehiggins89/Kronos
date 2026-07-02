@@ -4,11 +4,14 @@ from datetime import datetime
 import logging
 import os
 import pandas as pd
+import requests
 import yfinance as yf
 
-from ..config import MAX_ATM_BID_ASK_SPREAD_PCT, MIN_ATM_OPEN_INTEREST
+from .. import config as scanner_config
 from .market_data import _alpaca_credentials, _alpaca_get
 from ..utils.validation import OptionsContractResult
+
+TRADIER_API_BASE = "https://api.tradier.com/v1"
 
 
 def _spread_pct(bid: float, ask: float) -> float:
@@ -77,12 +80,195 @@ def _relative_disagreement(first: float | None, second: float | None) -> float |
 
 
 def _options_quality(feed: str, quote_age: float | None, disagreement: float | None) -> float:
-    quality = 1.0 if feed == "opra" else 0.6 if feed == "indicative" else 0.45
+    if feed == "opra":
+        quality = 1.0
+    elif feed == "opra-consolidated":
+        # Tradier: real OPRA-consolidated NBBO with sizes and native OI.
+        quality = 0.9
+    elif feed == "indicative":
+        quality = 0.6
+    else:
+        quality = 0.45
     if quote_age is None or quote_age > 30:
         quality -= 0.2
     if disagreement is not None:
         quality -= min(disagreement, 0.3)
     return round(max(0.0, min(1.0, quality)), 4)
+
+
+def _tradier_token() -> str:
+    return os.getenv("TRADIER_API_TOKEN", "").strip()
+
+
+def _tradier_get(path: str, params: dict, token: str, logger: logging.Logger, retries: int = 2) -> dict | None:
+    """GET against the production Tradier API; None means infrastructure
+    failure (auth, transport, non-200) and the caller may fall back."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    last_error: Exception | None = None
+    for _ in range(retries + 1):
+        try:
+            response = requests.get(f"{TRADIER_API_BASE}{path}", headers=headers, params=params, timeout=15)
+        except Exception as exc:
+            last_error = exc
+            continue
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                last_error = exc
+                continue
+            return payload if isinstance(payload, dict) else None
+        if response.status_code in {401, 403}:
+            logger.warning(
+                "Tradier auth failed (%s); TRADIER_API_TOKEN must be the PRODUCTION token, not sandbox",
+                response.status_code,
+            )
+            return None
+        last_error = RuntimeError(f"tradier http {response.status_code}")
+    logger.warning("Tradier request failed: %s (%s)", path, last_error)
+    return None
+
+
+def _tradier_list(payload_section) -> list:
+    # Tradier collapses single-item lists to a bare object/string.
+    if payload_section is None:
+        return []
+    if isinstance(payload_section, list):
+        return payload_section
+    return [payload_section]
+
+
+def _tradier_quote_timestamp(row: dict):
+    stamps = [row.get("bid_date"), row.get("ask_date")]
+    stamps = [s for s in stamps if isinstance(s, (int, float)) and s > 0]
+    if not stamps:
+        return None
+    return pd.Timestamp(max(stamps), unit="ms", tz="UTC")
+
+
+def _select_via_tradier(
+    ticker: str,
+    direction: str,
+    breakout_price: float,
+    logger: logging.Logger,
+    min_dte: int,
+    max_dte: int,
+    token: str,
+) -> OptionsContractResult | None:
+    """ATM contract from real-time OPRA-consolidated Tradier chains.
+
+    Returns None only on infrastructure failure so the caller can fall back
+    to the indicative pipeline. A chain that fails the liquidity gates is an
+    authoritative fail - falling back to lower-grade data to force a pass
+    would defeat the point of execution-grade quotes.
+    """
+    payload = _tradier_get(
+        "/markets/options/expirations",
+        {"symbol": ticker, "includeAllRoots": "true", "strikes": "false"},
+        token,
+        logger,
+    )
+    if payload is None:
+        return None
+    expirations_section = payload.get("expirations")
+    dates = _tradier_list(expirations_section.get("date")) if isinstance(expirations_section, dict) else []
+
+    contract_type = "call" if direction == "bullish" else "put"
+    today = pd.Timestamp.now().date()
+    valid_exp = []
+    for exp in dates:
+        try:
+            dte = (pd.Timestamp(exp).date() - today).days
+        except (TypeError, ValueError):
+            continue
+        if min_dte <= dte <= max_dte:
+            valid_exp.append((str(exp), dte))
+
+    if not valid_exp:
+        return OptionsContractResult(
+            False, None, None, contract_type, None, None, None, None, None, None, None, None,
+            f"no expirations in {min_dte}-{max_dte} DTE",
+            data_provider="tradier",
+            data_feed="opra-consolidated",
+        )
+
+    for exp, dte in valid_exp:
+        chain_payload = _tradier_get(
+            "/markets/options/chains",
+            {"symbol": ticker, "expiration": exp, "greeks": "true"},
+            token,
+            logger,
+        )
+        if chain_payload is None:
+            return None
+        options_section = chain_payload.get("options")
+        rows = _tradier_list(options_section.get("option")) if isinstance(options_section, dict) else []
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("option_type") != contract_type:
+                continue
+            try:
+                strike = float(row.get("strike"))
+                bid = float(row.get("bid") or 0.0)
+                ask = float(row.get("ask") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            candidates.append((abs(strike - breakout_price), -float(row.get("open_interest") or 0), row, strike, bid, ask))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        _, _, row, strike, bid, ask = candidates[0]
+
+        open_interest = int(row.get("open_interest") or 0)
+        volume = int(row.get("volume") or 0)
+        if bid <= 0 or ask <= bid:
+            continue
+        spread = _spread_pct(bid, ask)
+        if spread > scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT:
+            continue
+        if open_interest < scanner_config.MIN_ATM_OPEN_INTEREST:
+            continue
+
+        quote_ts = _tradier_quote_timestamp(row)
+        quote_age = _quote_age_minutes(quote_ts) if quote_ts is not None else None
+        greeks = row.get("greeks") if isinstance(row.get("greeks"), dict) else {}
+        implied_vol = greeks.get("mid_iv") if greeks.get("mid_iv") is not None else greeks.get("smv_vol")
+        return OptionsContractResult(
+            passed=True,
+            expiration=exp,
+            dte=dte,
+            contract_type=contract_type,
+            strike=strike,
+            bid=bid,
+            ask=ask,
+            midpoint=(bid + ask) / 2.0,
+            spread_pct=spread,
+            open_interest=open_interest,
+            volume=volume,
+            implied_volatility=float(implied_vol) if implied_vol is not None else None,
+            skip_reason=None,
+            data_provider="tradier",
+            data_feed="opra-consolidated",
+            quote_source="tradier",
+            open_interest_source="tradier",
+            quote_timestamp=quote_ts.isoformat() if quote_ts is not None else None,
+            quote_age_minutes=quote_age,
+            greeks_available=bool(greeks),
+            source_disagreement_pct=None,
+            options_data_quality=_options_quality("opra-consolidated", quote_age, None),
+            bid_size=int(row.get("bidsize") or 0) or None,
+            ask_size=int(row.get("asksize") or 0) or None,
+        )
+
+    return OptionsContractResult(
+        False, None, None, contract_type, None, None, None, None, None, None, None, None,
+        (
+            f"no {contract_type} contract passed: bid>0, ask>bid, "
+            f"spread<={scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT:.0%}, OI>={scanner_config.MIN_ATM_OPEN_INTEREST}"
+        ),
+        data_provider="tradier",
+        data_feed="opra-consolidated",
+    )
 
 
 def select_options_contract(
@@ -94,6 +280,13 @@ def select_options_contract(
     max_dte: int = 60,
 ) -> OptionsContractResult:
     try:
+        token = _tradier_token()
+        if token:
+            tradier_result = _select_via_tradier(ticker, direction, breakout_price, logger, min_dte, max_dte, token)
+            if tradier_result is not None:
+                return tradier_result
+            logger.warning("%s Tradier unavailable; falling back to indicative options pipeline", ticker)
+
         yf_ticker = yf.Ticker(ticker)
         alpaca_snapshots = _fetch_alpaca_option_snapshots(ticker, logger)
         alpaca_feed = os.getenv("ALPACA_OPTIONS_FEED", "indicative").strip().lower() or "indicative"
@@ -143,9 +336,9 @@ def select_options_contract(
             if ask <= bid:
                 continue
             spread = _spread_pct(bid, ask)
-            if spread > MAX_ATM_BID_ASK_SPREAD_PCT:
+            if spread > scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT:
                 continue
-            if oi < MIN_ATM_OPEN_INTEREST:
+            if oi < scanner_config.MIN_ATM_OPEN_INTEREST:
                 continue
 
             yf_midpoint = (yf_bid + yf_ask) / 2.0 if yf_bid > 0 and yf_ask > yf_bid else None
@@ -202,7 +395,7 @@ def select_options_contract(
                 implied_volatility=None,
                 skip_reason=(
                     f"no {contract_type} contract passed: bid>0, ask>bid, "
-                    f"spread<={MAX_ATM_BID_ASK_SPREAD_PCT:.0%}, OI>={MIN_ATM_OPEN_INTEREST}"
+                    f"spread<={scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT:.0%}, OI>={scanner_config.MIN_ATM_OPEN_INTEREST}"
                 ),
             )
 
