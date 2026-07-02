@@ -31,8 +31,10 @@ from .config import (
     CALIBRATION_WARN_AVG_ABS_MAX,
     ALPACA_FEED,
     DRY_RUN_DEFAULT,
+    EDGE_ANALOG_DIRECTION_MATCH,
     EDGE_ANALOG_K,
     EDGE_AUDIT_REPORT_PATH,
+    EDGE_CROSS_TICKER_EMBARGO_DAYS,
     EDGE_DIAGNOSTIC_REPORT_PATH,
     EDGE_EMBARGO_DAYS,
     EVIDENCE_DIR,
@@ -42,6 +44,7 @@ from .config import (
     EDGE_VALIDATION_MAX_RECORDS,
     EDGE_VALIDATION_REPORT_PATH,
     EDGE_VALIDATION_THRESHOLDS,
+    EDGE_VALIDATION_TOP_K,
     LOG_DIR,
     MARKET_DATA_PROVIDER_DEFAULT,
     MIN_EMPTY_SPACE_SCORE,
@@ -59,7 +62,15 @@ from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
 from .edge.audit import compute_edge_audit_report
 from .edge.features import extract_edge_features
-from .edge.retrieval import EdgeAnalogIndex, EdgeRecord, build_edge_records_from_bars, find_analogs, load_edge_index, save_edge_index
+from .edge.retrieval import (
+    EdgeAnalogIndex,
+    EdgeRecord,
+    build_edge_records_from_bars,
+    find_analogs,
+    load_edge_index,
+    save_edge_index,
+    select_recent_records,
+)
 from .edge.scoring import score_edge_candidate
 from .edge.validation import compute_edge_validation_report
 from .evidence.store import EvidenceRun, start_evidence_run
@@ -1088,7 +1099,13 @@ def _score_edge_for_bars(
     features["direction"] = direction
     features["research_score"] = research.get("score", 0)
     features["research_passed"] = 1.0 if research.get("passed") else 0.0
-    analogs = find_analogs(features, index_records, k=EDGE_ANALOG_K, embargo_days=EDGE_EMBARGO_DAYS)
+    analogs = find_analogs(
+        features,
+        index_records,
+        k=EDGE_ANALOG_K,
+        embargo_days=EDGE_EMBARGO_DAYS,
+        direction_match=EDGE_ANALOG_DIRECTION_MATCH,
+    )
     scoring = score_edge_candidate(features, analogs, min_analogs=EDGE_MIN_ANALOGS)
     return {
         "ticker": ticker,
@@ -1235,7 +1252,7 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
 def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     records = load_edge_index(EDGE_INDEX_PATH)
     analog_index = EdgeAnalogIndex(records)
-    validation_records = records[-EDGE_VALIDATION_MAX_RECORDS:] if EDGE_VALIDATION_MAX_RECORDS > 0 else records
+    validation_records = select_recent_records(records, EDGE_VALIDATION_MAX_RECORDS)
     candidates = []
     for record in validation_records:
         analogs = find_analogs(
@@ -1244,6 +1261,8 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
             k=EDGE_ANALOG_K,
             embargo_days=EDGE_EMBARGO_DAYS,
             allow_future=False,
+            direction_match=EDGE_ANALOG_DIRECTION_MATCH,
+            cross_ticker_embargo_days=EDGE_CROSS_TICKER_EMBARGO_DAYS,
         )
         scoring = score_edge_candidate(record.features, analogs, min_analogs=EDGE_MIN_ANALOGS)
         candidates.append(
@@ -1265,7 +1284,7 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     report = compute_edge_validation_report(
         candidates,
         thresholds=EDGE_VALIDATION_THRESHOLDS,
-        top_k=EDGE_ANALOG_K,
+        top_k=EDGE_VALIDATION_TOP_K,
         slippage_pct=0.05,
     )
     report["mode"] = "validate_edge"

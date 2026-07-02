@@ -106,7 +106,7 @@ def test_validate_edge_reuses_analog_index(monkeypatch, tmp_path):
     seen_record_types = []
     seen_allow_future = []
 
-    def fake_find_analogs(features, records, k=7, embargo_days=5, allow_future=True):
+    def fake_find_analogs(features, records, k=7, embargo_days=5, allow_future=True, **kwargs):
         seen_record_types.append(type(records).__name__)
         seen_allow_future.append(allow_future)
         return []

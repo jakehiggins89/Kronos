@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FEATURE_VERSION = 2
+FEATURE_VERSION = 3
 
 
 def _as_dict(obj: Any) -> dict:
@@ -184,9 +184,12 @@ def extract_edge_features(
         "options_quote_age_minutes": _finite_float(opt.get("quote_age_minutes"), 9999.0 if opt else 0.0),
         "options_source_disagreement_pct": _finite_float(opt.get("source_disagreement_pct")),
         "options_data_quality": _finite_float(opt.get("options_data_quality"), 0.45 if opt else 0.0),
-        "kronos_directional_agreement": _finite_float(kr.get("directional_agreement")),
-        "kronos_median_forecast_return_pct": _finite_float(kr.get("median_forecast_return_pct")),
-        "kronos_worst_sampled_return_pct": _finite_float(kr.get("worst_sampled_return_pct")),
+        # None (not 0.0) when Kronos was never consulted: 0.0 reads as "maximum
+        # disagreement" downstream and silently penalized every candidate that
+        # skipped the Kronos stage.
+        "kronos_directional_agreement": _finite_float(kr.get("directional_agreement")) if kr else None,
+        "kronos_median_forecast_return_pct": _finite_float(kr.get("median_forecast_return_pct")) if kr else None,
+        "kronos_worst_sampled_return_pct": _finite_float(kr.get("worst_sampled_return_pct")) if kr else None,
         "kronos_sample_count": _finite_float(kr.get("sample_count")),
         "data_missing_bars": _finite_float(dq.get("missing_bars")),
         "data_stale_minutes": _finite_float(dq.get("stale_minutes")),

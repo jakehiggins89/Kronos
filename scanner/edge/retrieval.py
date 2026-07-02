@@ -28,6 +28,43 @@ class EdgeRecord:
     mfe_pct: float
 
 
+# Setup-shape features only: scale-free, present in both historical and live
+# records, and free of price-level or provider-dependent dimensions. Price
+# levels (latest_close, box_top, atr_value) made analogs cluster by share
+# price, and options/kronos/data fields are populated live but zero/absent in
+# history, which distorted live-vs-historical distances.
+ANALOG_FEATURE_KEYS = frozenset(
+    {
+        "potter_passed",
+        "empty_space_passed",
+        "box_width_pct",
+        "close_position_in_box",
+        "breakout_distance_pct",
+        "abs_breakout_distance_pct",
+        "breakout_strength_pct",
+        "range_compression_ratio",
+        "no_trend_score",
+        "top_touches",
+        "bottom_touches",
+        "volume_expansion",
+        "volume_percentile",
+        "realized_volatility_pct",
+        "recent_return_pct",
+        "empty_space_score",
+        "rr_ratio",
+        "distance_to_target_pct",
+        "risk_pct",
+        "doctrine_v2_passed",
+        "doctrine_v2_score",
+        "doctrine_v2_box_stack_score",
+        "doctrine_v2_punchback_reclaim",
+        "doctrine_v2_failed_reentry",
+        "research_score",
+        "research_passed",
+    }
+)
+
+
 def _finite_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -52,10 +89,7 @@ def _parse_ts(value: Any) -> pd.Timestamp | None:
 
 def _numeric_feature_keys(query_features: dict, candidate_features: dict) -> list[str]:
     keys = []
-    excluded = {"feature_version", "bar_count"}
-    for key in sorted(set(query_features).intersection(candidate_features)):
-        if key in excluded:
-            continue
+    for key in sorted(ANALOG_FEATURE_KEYS.intersection(query_features).intersection(candidate_features)):
         qv = query_features.get(key)
         cv = candidate_features.get(key)
         if isinstance(qv, bool) or isinstance(cv, bool):
@@ -171,23 +205,47 @@ def find_analogs(
     k: int = 7,
     embargo_days: int = 5,
     allow_future: bool = True,
+    direction_match: bool = False,
+    cross_ticker_embargo_days: int = 0,
 ) -> list[dict[str, Any]]:
     if isinstance(records, EdgeAnalogIndex):
-        return records.find_analogs(query_features, k=k, embargo_days=embargo_days, allow_future=allow_future)
+        return records.find_analogs(
+            query_features,
+            k=k,
+            embargo_days=embargo_days,
+            allow_future=allow_future,
+            direction_match=direction_match,
+            cross_ticker_embargo_days=cross_ticker_embargo_days,
+        )
 
     query_ticker = str(query_features.get("ticker", "")).upper()
     query_ts = _parse_ts(query_features.get("timestamp"))
+    query_direction = str(query_features.get("direction", ""))
     scored = []
 
     for raw in records:
         record = raw if isinstance(raw, EdgeRecord) else EdgeRecord(**raw)
         candidate_ts = _parse_ts(record.timestamp)
         if (
+            direction_match
+            and query_direction in {"bullish", "bearish"}
+            and record.direction in {"bullish", "bearish"}
+            and record.direction != query_direction
+        ):
+            continue
+        if (
             query_ticker
             and record.ticker.upper() == query_ticker
             and query_ts is not None
             and candidate_ts is not None
             and abs((query_ts - candidate_ts).days) < embargo_days
+        ):
+            continue
+        if (
+            cross_ticker_embargo_days > 0
+            and query_ts is not None
+            and candidate_ts is not None
+            and abs((query_ts - candidate_ts).days) < cross_ticker_embargo_days
         ):
             continue
         if not allow_future and query_ts is not None and candidate_ts is not None and candidate_ts >= query_ts:
@@ -203,14 +261,33 @@ def find_analogs(
     return scored[:k]
 
 
+def select_recent_records(records: list[EdgeRecord], limit: int) -> list[EdgeRecord]:
+    """Most recent records by timestamp across all tickers.
+
+    The index file is grouped ticker-by-ticker, so a plain tail slice
+    validates only the last few watchlist names instead of a
+    cross-sectional sample.
+    """
+    if limit <= 0 or len(records) <= limit:
+        return list(records)
+
+    def sort_key(record: EdgeRecord) -> tuple[int, pd.Timestamp]:
+        ts = _parse_ts(record.timestamp)
+        if ts is None:
+            return (0, pd.Timestamp(0, tz="UTC"))
+        return (1, ts)
+
+    ordered = sorted(records, key=sort_key)
+    return ordered[-limit:]
+
+
 class EdgeAnalogIndex:
     """Vectorized in-memory analog search over EdgeRecord feature dictionaries."""
-
-    _excluded_keys = {"feature_version", "bar_count"}
 
     def __init__(self, records: Iterable[EdgeRecord | dict]):
         self.records = [raw if isinstance(raw, EdgeRecord) else EdgeRecord(**raw) for raw in records]
         self._tickers = [record.ticker.upper() for record in self.records]
+        self._directions = [str(record.direction) for record in self.records]
         self._timestamps = [_parse_ts(record.timestamp) for record in self.records]
         self._payloads: list[dict[str, Any] | None] = [None] * len(self.records)
         self._keys = self._feature_keys(self.records)
@@ -222,12 +299,20 @@ class EdgeAnalogIndex:
         k: int = 7,
         embargo_days: int = 5,
         allow_future: bool = True,
+        direction_match: bool = False,
+        cross_ticker_embargo_days: int = 0,
     ) -> list[dict[str, Any]]:
         if not self.records or k <= 0:
             return []
 
         distances = self._distances(query_features)
-        self._apply_time_filters(distances, query_features, embargo_days, allow_future)
+        if direction_match:
+            query_direction = str(query_features.get("direction", ""))
+            if query_direction in {"bullish", "bearish"}:
+                for idx, direction in enumerate(self._directions):
+                    if direction in {"bullish", "bearish"} and direction != query_direction:
+                        distances[idx] = np.inf
+        self._apply_time_filters(distances, query_features, embargo_days, allow_future, cross_ticker_embargo_days)
         finite_idx = np.flatnonzero(np.isfinite(distances))
         if finite_idx.size == 0:
             return []
@@ -270,6 +355,7 @@ class EdgeAnalogIndex:
         query_features: dict,
         embargo_days: int,
         allow_future: bool,
+        cross_ticker_embargo_days: int = 0,
     ) -> None:
         query_ticker = str(query_features.get("ticker", "")).upper()
         query_ts = _parse_ts(query_features.get("timestamp"))
@@ -281,7 +367,11 @@ class EdgeAnalogIndex:
             if not allow_future and candidate_ts >= query_ts:
                 distances[idx] = np.inf
                 continue
-            if query_ticker and ticker == query_ticker and abs((query_ts - candidate_ts).days) < embargo_days:
+            gap_days = abs((query_ts - candidate_ts).days)
+            if query_ticker and ticker == query_ticker and gap_days < embargo_days:
+                distances[idx] = np.inf
+                continue
+            if cross_ticker_embargo_days > 0 and gap_days < cross_ticker_embargo_days:
                 distances[idx] = np.inf
 
     def _payload_with_distance(self, idx: int, distance: float) -> dict[str, Any]:
@@ -298,7 +388,7 @@ class EdgeAnalogIndex:
         keys: set[str] = set()
         for record in records:
             for key, value in record.features.items():
-                if key not in cls._excluded_keys and _is_numeric_feature(value):
+                if key in ANALOG_FEATURE_KEYS and _is_numeric_feature(value):
                     keys.add(key)
         return sorted(keys)
 

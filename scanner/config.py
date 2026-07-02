@@ -75,8 +75,15 @@ AUTOTUNE_EMPTY_SPACE_STEP = 1
 EDGE_ANALOG_K = 7
 EDGE_EMBARGO_DAYS = 5
 EDGE_MIN_ANALOGS = 3
-EDGE_VALIDATION_MAX_RECORDS = 600
+# Analogs must share the query's breakout direction; a bullish setup should
+# not borrow expectancy from bearish history.
+EDGE_ANALOG_DIRECTION_MATCH = True
+# During validation, block analogs from any ticker within this many days of
+# the query so same-day market-wide moves cannot inflate apparent skill.
+EDGE_CROSS_TICKER_EMBARGO_DAYS = 1
+EDGE_VALIDATION_MAX_RECORDS = 1500
 EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
+EDGE_VALIDATION_TOP_K = 25
 
 MIN_RR_BOUNDS = (1.1, 2.5)
 MIN_KRONOS_AGREEMENT_BOUNDS = (0.50, 0.85)
