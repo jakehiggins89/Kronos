@@ -5,14 +5,11 @@ import pandas as pd
 
 from .. import config as scanner_config
 from ..config import (
-    ATR_COMPRESSION,
     ATR_PERIOD,
     BOX_TOUCH_TOLERANCE_PCT,
     CONSOLIDATION_BARS,
     MIN_BOX_BOTTOM_TOUCHES,
     MIN_BOX_TOP_TOUCHES,
-    NO_TREND_SLOPE_ABS_MAX,
-    RANGE_COMPRESSION,
     RESEARCH_MIN_VOLUME_EXPANSION,
     RESEARCH_NEAR_BREAKOUT_PCT,
     USE_CLOSE_BASED_CONTROL,
@@ -129,9 +126,11 @@ def detect_potter_box(ticker: str, synthetic_bars: pd.DataFrame) -> PotterBoxRes
         breakout_strength_pct = ((control_bottom - breakout_close) / max(control_bottom, 1e-9)) * 100
 
     checks = {
-        "atr_compressed": atr_value <= ATR_COMPRESSION * prior_avg_range,
-        "range_compressed": range_compression_ratio <= RANGE_COMPRESSION,
-        "no_trend": no_trend_score <= NO_TREND_SLOPE_ABS_MAX,
+        # Tunable gates read module attributes so tuning overrides applied
+        # mid-process (research_ops) take effect without a restart.
+        "atr_compressed": atr_value <= scanner_config.ATR_COMPRESSION * prior_avg_range,
+        "range_compressed": range_compression_ratio <= scanner_config.RANGE_COMPRESSION,
+        "no_trend": no_trend_score <= scanner_config.NO_TREND_SLOPE_ABS_MAX,
         "top_touches_ok": top_touches >= MIN_BOX_TOP_TOUCHES,
         "bottom_touches_ok": bottom_touches >= MIN_BOX_BOTTOM_TOUCHES,
         "bullish_breakout": bullish,

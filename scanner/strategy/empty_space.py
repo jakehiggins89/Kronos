@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 
-from ..config import MIN_EMPTY_SPACE_SCORE, MIN_RR
+from .. import config as scanner_config
 from ..strategy.risk_reward import compute_rr
 from ..utils.validation import EmptySpaceResult
 
@@ -44,7 +44,7 @@ def score_empty_space(
     elif rr >= 1.0:
         score = 1
 
-    passed = score >= MIN_EMPTY_SPACE_SCORE and rr >= MIN_RR
+    passed = score >= scanner_config.MIN_EMPTY_SPACE_SCORE and rr >= scanner_config.MIN_RR
     reason = None if passed else f"empty space score {score} / rr {rr:.2f} below thresholds"
 
     return EmptySpaceResult(

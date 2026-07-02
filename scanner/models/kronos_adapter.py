@@ -8,7 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..config import KRONOS_LOOKBACK_BARS, KRONOS_SAMPLE_COUNT, MIN_KRONOS_AGREEMENT, PRED_DAYS
+from .. import config as scanner_config
+from ..config import KRONOS_LOOKBACK_BARS, KRONOS_SAMPLE_COUNT, PRED_DAYS
 from ..data.market_data import compute_future_timestamps
 from ..utils.validation import KronosResult
 
@@ -108,7 +109,7 @@ class KronosAdapter:
                 directional_agreement = float(np.mean(agree))
                 median_ret = float(np.median(final_returns))
                 worst_ret = float(np.min(final_returns)) if direction == "bullish" else float(np.max(final_returns))
-                passed = directional_agreement >= MIN_KRONOS_AGREEMENT
+                passed = directional_agreement >= scanner_config.MIN_KRONOS_AGREEMENT
                 return KronosResult(
                     passed=passed,
                     output_mode="multi_path_agreement",
@@ -116,7 +117,7 @@ class KronosAdapter:
                     median_forecast_return_pct=median_ret,
                     worst_sampled_return_pct=worst_ret,
                     sample_count=len(final_returns),
-                    skip_reason=None if passed else f"directional agreement {directional_agreement:.2%} < {MIN_KRONOS_AGREEMENT:.0%}",
+                    skip_reason=None if passed else f"directional agreement {directional_agreement:.2%} < {scanner_config.MIN_KRONOS_AGREEMENT:.0%}",
                     output_type="list[pd.DataFrame]",
                     output_shape=(len(paths), len(paths[0]), len(paths[0].columns)),
                 )

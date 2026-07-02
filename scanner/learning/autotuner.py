@@ -2,28 +2,20 @@
 
 import json
 
+from .. import config as scanner_config
 from ..config import (
-    ATR_COMPRESSION,
     ATR_COMPRESSION_BOUNDS,
     AUTOTUNE_EMPTY_SPACE_STEP,
     AUTOTUNE_MIN_SAMPLES,
     AUTOTUNE_STEP_SIZE,
-    MAX_ATM_BID_ASK_SPREAD_PCT,
     MAX_ATM_BID_ASK_SPREAD_PCT_BOUNDS,
-    MIN_ATM_OPEN_INTEREST,
     MIN_ATM_OPEN_INTEREST_BOUNDS,
-    MIN_EMPTY_SPACE_SCORE,
     MIN_EMPTY_SPACE_SCORE_BOUNDS,
-    MIN_KRONOS_AGREEMENT,
     MIN_KRONOS_AGREEMENT_BOUNDS,
-    MIN_RR,
     MIN_RR_BOUNDS,
-    NO_TREND_SLOPE_ABS_MAX,
     NO_TREND_SLOPE_ABS_MAX_BOUNDS,
     OVERRIDES_PATH,
-    RANGE_COMPRESSION,
     RANGE_COMPRESSION_BOUNDS,
-    RESEARCH_CANDIDATE_MIN_SCORE,
     RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS,
     TUNING_DIR,
 )
@@ -60,15 +52,17 @@ def propose_overrides(records: list[dict]) -> dict:
         k = str(r.get("stage_failed") or "final_pass")
         false_pos_by_stage[k] = false_pos_by_stage.get(k, 0) + 1
 
-    rr = MIN_RR
-    kronos = MIN_KRONOS_AGREEMENT
-    es = MIN_EMPTY_SPACE_SCORE
-    spread = MAX_ATM_BID_ASK_SPREAD_PCT
-    oi = MIN_ATM_OPEN_INTEREST
-    atr = ATR_COMPRESSION
-    rng = RANGE_COMPRESSION
-    slope = NO_TREND_SLOPE_ABS_MAX
-    research_score = RESEARCH_CANDIDATE_MIN_SCORE
+    # Read effective values (with any applied overrides), not the import-time
+    # defaults, so proposals step from where the system actually is.
+    rr = scanner_config.MIN_RR
+    kronos = scanner_config.MIN_KRONOS_AGREEMENT
+    es = scanner_config.MIN_EMPTY_SPACE_SCORE
+    spread = scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT
+    oi = scanner_config.MIN_ATM_OPEN_INTEREST
+    atr = scanner_config.ATR_COMPRESSION
+    rng = scanner_config.RANGE_COMPRESSION
+    slope = scanner_config.NO_TREND_SLOPE_ABS_MAX
+    research_score = scanner_config.RESEARCH_CANDIDATE_MIN_SCORE
 
     missed_total = len(missed_winners) + len(correct_skips)
     missed_win_rate = len(missed_winners) / max(missed_total, 1)

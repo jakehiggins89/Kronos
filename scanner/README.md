@@ -209,11 +209,16 @@ Research mode:
 .\venv\Scripts\python.exe -m scanner.main --mode replay_eval --replay_dataset "C:\Users\Jacob Higgins\projects\kronos-predictor\scanner\replay\sample_replay_dataset.json"
 ```
 
-## Data Upgrade Paths (clears the audit's data warnings)
-The audit warnings `options_data_not_execution_grade`, `options_liquidity_missing`, and `low_feed_confidence` are data-subscription facts, not code bugs. Researched options (July 2026):
-- $0/mo: open a Tradier brokerage account. The production API token gives real-time OPRA-consolidated option chains with bid/ask, sizes, volume, and open interest (sandbox tokens are 15-min delayed; keep at least $2k or 2 trades/yr to avoid the $50 inactivity fee).
-- ~$29/mo: Tradier for options plus Polygon/Massive Stocks Starter for full-market delayed equity bars.
-- $99/mo (one-vendor): Alpaca Algo Trader Plus - full SIP equities plus the real-time OPRA options feed on the SDK already integrated (`feed="sip"` / `feed="opra"`).
+## Tradier Options Data (wired 2026-07-02)
+Set `TRADIER_API_TOKEN` in `scanner\.env` (a PRODUCTION brokerage token - sandbox tokens are 15-min delayed and stay research-grade). Option selection then uses Tradier's real-time OPRA-consolidated chains first: NBBO bid/ask with sizes, native volume and open interest, ORATS greeks, true quote timestamps.
+
+Behavior:
+- Liquidity-gate failures on Tradier data are authoritative (no fallback to lower-grade data to force a pass). Only infrastructure failures (auth/transport) fall back to the legacy Alpaca-indicative + yfinance pipeline, with a warning.
+- `options_data_quality` is 0.9 for fresh quotes (execution-grade; clears the audit's 0.75 bar during market hours) and degrades past 30 minutes, so after-hours scans are honestly research-grade. Run scans during market hours for execution-grade evidence.
+- Keep at least $2k in the account or make 2 trades/yr to avoid Tradier's $50 inactivity fee; unfunded accounts lose API access after 60 days.
+
+## Remaining Data Upgrade Paths
+- `low_feed_confidence` (equities): free Alpaca IEX remains the bar source. Full-SIP options: Alpaca Algo Trader Plus $99/mo (also real-time OPRA options on the existing SDK: `feed="sip"` / `feed="opra"`), or Polygon/Massive Stocks Starter $29/mo for delayed full-market bars.
 
 ## Limitations
 - Free Alpaca IEX feed is not full SIP coverage.
