@@ -1277,6 +1277,8 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
                 "r_multiple": record.r_multiple,
                 "mae_pct": record.mae_pct,
                 "mfe_pct": record.mfe_pct,
+                "exit_reason": record.exit_reason,
+                "outcome_method": record.outcome_method,
             }
         )
     if evidence_run is not None:

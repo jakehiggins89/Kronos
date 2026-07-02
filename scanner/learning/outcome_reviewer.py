@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..config import OUTCOME_MIN_AGE_DAYS, OUTCOME_REVIEW_MAX_RECORDS, PRED_DAYS, REPORT_DIR, TIMEZONE
+from ..config import (
+    OUTCOME_EXPIRY_DAYS,
+    OUTCOME_MIN_AGE_DAYS,
+    OUTCOME_REVIEW_MAX_RECORDS,
+    PRED_DAYS,
+    REPORT_DIR,
+    TIMEZONE,
+)
 from ..data.market_data import fetch_intraday_bars
 from ..data.synthetic_sessions import build_synthetic_sessions
 
@@ -17,6 +24,21 @@ def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple
         ret = ((entry - future_close) / entry) * 100.0
     label = "win" if ret > 0 else "loss"
     return label, float(ret)
+
+
+def _path_excursions(path: pd.DataFrame, direction: str, entry: float) -> dict | None:
+    """Directional MAE/MFE over the outcome window, when OHLC is available."""
+    if entry <= 0 or path.empty or not {"High", "Low"}.issubset(path.columns):
+        return None
+    high = float(path["High"].max())
+    low = float(path["Low"].min())
+    if direction == "bullish":
+        mae = ((low - entry) / entry) * 100.0
+        mfe = ((high - entry) / entry) * 100.0
+    else:
+        mae = ((entry - high) / entry) * 100.0
+        mfe = ((entry - low) / entry) * 100.0
+    return {"mae_pct": float(mae), "mfe_pct": float(mfe)}
 
 
 def _record_decision_timestamp(record: dict) -> pd.Timestamp:
@@ -45,6 +67,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
     now = pd.Timestamp.now(tz=TIMEZONE)
     updated = 0
     skipped = 0
+    expired = 0
     resolved_live = 0
     resolved_counterfactual = 0
 
@@ -59,6 +82,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
                 continue
 
             created = _record_decision_timestamp(rec)
+            too_old_to_ever_resolve = (now - created).days > OUTCOME_EXPIRY_DAYS
 
             if (now - created).days < OUTCOME_MIN_AGE_DAYS:
                 continue
@@ -70,6 +94,12 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
 
             start_pos = _decision_session_position(synthetic.index, created)
             if start_pos < 0:
+                # The decision predates the available intraday window; that
+                # window only slides forward, so this can never resolve.
+                if too_old_to_ever_resolve:
+                    rec["outcome_status"] = "not_applicable"
+                    rec["outcome_error"] = "expired_before_resolution_window"
+                    expired += 1
                 continue
             target_pos = start_pos + PRED_DAYS
             if target_pos >= len(synthetic):
@@ -81,6 +111,14 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             rec["outcome_status"] = "resolved"
             rec["outcome_label"] = outcome
             rec["outcome_ret_5bar_pct"] = ret5
+            excursions = _path_excursions(
+                synthetic.iloc[start_pos + 1 : target_pos + 1],
+                rec["direction"],
+                float(rec["entry_price"]),
+            )
+            if excursions is not None:
+                rec["outcome_mae_pct"] = excursions["mae_pct"]
+                rec["outcome_mfe_pct"] = excursions["mfe_pct"]
             rec["outcome_resolved_at"] = pd.Timestamp.utcnow().isoformat()
             updated += 1
             if rec.get("counterfactual"):
@@ -96,6 +134,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
         "resolved_live": resolved_live,
         "resolved_counterfactual": resolved_counterfactual,
         "marked_not_applicable": skipped,
+        "expired_unresolvable": expired,
     }
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     (REPORT_DIR / "outcome_review_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

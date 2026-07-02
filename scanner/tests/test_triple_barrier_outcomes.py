@@ -1,0 +1,186 @@
+import logging
+
+import pandas as pd
+import pytest
+
+from scanner.edge.retrieval import _future_outcome, resolve_trade_risk_pct
+from scanner.learning import outcome_reviewer
+
+
+def _bars(rows):
+    idx = pd.date_range("2026-01-01", periods=len(rows), freq="D", tz="America/New_York")
+    return pd.DataFrame(rows, index=idx, columns=["Open", "High", "Low", "Close", "Volume"])
+
+
+def test_stop_hit_first_is_a_loss_even_if_price_recovers():
+    # Entry 100, risk 2% -> stop 98. Bar 2 dips to 97, then price runs to 106.
+    # The old close-at-horizon label called this a win.
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],  # idx 0 = entry bar
+            [100, 102, 99.5, 101, 1000],
+            [101, 101.5, 97.0, 99, 1000],  # stop touched
+            [99, 104, 98.5, 103, 1000],
+            [103, 106, 102, 105, 1000],
+            [105, 107, 104, 106, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=8.0)
+
+    assert outcome["exit_reason"] == "stop"
+    assert outcome["label"] == "loss"
+    assert outcome["return_pct"] == -2.0
+    assert outcome["r_multiple"] == -1.0
+
+
+def test_target_hit_first_is_a_win_with_target_r_multiple():
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 102, 99.5, 101, 1000],
+            [101, 104.5, 100.5, 104, 1000],  # target 104 touched, stop never
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "target"
+    assert outcome["label"] == "win"
+    assert outcome["return_pct"] == 4.0
+    assert outcome["r_multiple"] == 2.0
+
+
+def test_same_bar_stop_and_target_resolves_conservatively_to_stop():
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 105, 97, 104, 1000],  # both barriers inside one bar
+            [104, 105, 103, 104, 1000],
+            [104, 105, 103, 104, 1000],
+            [104, 105, 103, 104, 1000],
+            [104, 105, 103, 104, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "stop"
+    assert outcome["label"] == "loss"
+
+
+def test_horizon_exit_uses_final_close_sign():
+    bars = _bars(
+        [
+            [100, 100.5, 99.5, 100, 1000],
+            [100, 100.5, 99.5, 100.2, 1000],
+            [100, 100.5, 99.5, 100.3, 1000],
+            [100, 100.5, 99.5, 100.4, 1000],
+            [100, 100.5, 99.5, 100.5, 1000],
+            [100, 101.0, 99.5, 100.8, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "horizon"
+    assert outcome["label"] == "win"
+    assert round(outcome["return_pct"], 2) == 0.8
+
+
+def test_bearish_direction_mirrors_barriers():
+    # Bearish entry 100, risk 2% -> stop 102 above, target 96 below.
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 101, 98, 99, 1000],
+            [99, 100, 95.5, 96, 1000],  # target touched
+            [96, 97, 95, 96.5, 1000],
+            [96, 97, 95, 96.5, 1000],
+            [96, 97, 95, 96.5, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bearish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "target"
+    assert outcome["label"] == "win"
+    assert outcome["return_pct"] == 4.0
+
+
+def test_risk_fallback_uses_atr_then_default():
+    assert resolve_trade_risk_pct(0.0, atr_value=1.5, entry=100.0) == 1.5
+    assert resolve_trade_risk_pct(0.0, atr_value=0.0, entry=100.0) == 2.0
+    assert resolve_trade_risk_pct(3.0, atr_value=1.5, entry=100.0) == 3.0
+    # Clamped so a near-zero denominator can't manufacture huge R values.
+    assert resolve_trade_risk_pct(0.06, atr_value=0.0, entry=100.0) == 0.25
+
+
+def _synthetic_sessions():
+    closes = [10.0, 10.5, 11.0, 11.5, 12.0, 12.5]
+    return pd.DataFrame(
+        {
+            "Close": closes,
+            "High": [c + 0.2 for c in closes],
+            "Low": [c - 0.3 for c in closes],
+        },
+        index=pd.DatetimeIndex(
+            [
+                pd.Timestamp("2026-06-24 00:00", tz="America/New_York"),
+                pd.Timestamp("2026-06-25 00:00", tz="America/New_York"),
+                pd.Timestamp("2026-06-26 00:00", tz="America/New_York"),
+                pd.Timestamp("2026-06-29 00:00", tz="America/New_York"),
+                pd.Timestamp("2026-06-30 00:00", tz="America/New_York"),
+                pd.Timestamp("2026-07-01 00:00", tz="America/New_York"),
+            ]
+        ),
+    )
+
+
+def _patch_reviewer(monkeypatch, tmp_path, synthetic):
+    monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker: pd.DataFrame())
+    monkeypatch.setattr(
+        outcome_reviewer,
+        "build_synthetic_sessions",
+        lambda intraday, anchor_hour, anchor_minute, source_interval, prepost_enabled: (synthetic, {}),
+    )
+
+
+def test_review_records_path_excursions(monkeypatch, tmp_path):
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-06-24T19:03:00-04:00",
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+    _patch_reviewer(monkeypatch, tmp_path, _synthetic_sessions())
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["resolved_now"] == 1
+    assert reviewed[0]["outcome_mae_pct"] == pytest.approx(2.0)  # lowest low 10.2 vs entry 10
+    assert reviewed[0]["outcome_mfe_pct"] == pytest.approx(27.0)  # highest high 12.7 vs entry 10
+
+
+def test_review_expires_pending_older_than_resolution_window(monkeypatch, tmp_path):
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-01-02T10:00:00-05:00",
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+    _patch_reviewer(monkeypatch, tmp_path, _synthetic_sessions())
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["expired_unresolvable"] == 1
+    assert reviewed[0]["outcome_status"] == "not_applicable"
+    assert reviewed[0]["outcome_error"] == "expired_before_resolution_window"

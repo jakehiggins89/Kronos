@@ -69,6 +69,9 @@ CALIBRATION_MIN_MATCHED_ROWS = 20
 TUNING_ENABLED_DEFAULT = True
 OUTCOME_REVIEW_MAX_RECORDS = 500
 OUTCOME_MIN_AGE_DAYS = 3
+# Pending decisions older than this can never resolve once they fall out of
+# the 60d intraday window; expire them instead of re-checking forever.
+OUTCOME_EXPIRY_DAYS = 45
 AUTOTUNE_MIN_SAMPLES = 20
 AUTOTUNE_STEP_SIZE = 0.05
 AUTOTUNE_EMPTY_SPACE_STEP = 1
