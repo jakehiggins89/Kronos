@@ -175,6 +175,29 @@ def _build_doctrine_v2_policy(
     }
 
 
+def _build_kronos_lift(rows: list[dict], min_agreement: float) -> dict:
+    """Outcome split by Kronos agreement among resolved research candidates.
+
+    This is the evidence that decides whether the Kronos confirmation stage
+    earns its place: agreement should show a materially better cohort.
+    """
+    scored = [row for row in rows if row.get("kronos_directional_agreement") is not None]
+    agree = [row for row in scored if _finite_float(row.get("kronos_directional_agreement")) >= min_agreement]
+    disagree = [row for row in scored if _finite_float(row.get("kronos_directional_agreement")) < min_agreement]
+    agree_block = _metric_block(agree)
+    disagree_block = _metric_block(disagree)
+    return {
+        "rows_with_kronos": len(scored),
+        "min_agreement": min_agreement,
+        "agree": agree_block,
+        "disagree": disagree_block,
+        "lift_win_rate": round(agree_block["win_rate"] - disagree_block["win_rate"], 4),
+        "lift_average_return_pct": round(
+            agree_block["average_return_pct"] - disagree_block["average_return_pct"], 4
+        ),
+    }
+
+
 def build_adaptive_policy_report(
     records: list[dict],
     *,
@@ -332,6 +355,7 @@ def build_adaptive_policy_report(
         },
         "threshold_candidates": threshold_candidates,
         "doctrine_v2": doctrine_v2,
+        "kronos_lift": _build_kronos_lift(research_rows, scanner_config.MIN_KRONOS_AGREEMENT),
         "recommendation": recommendation,
     }
 

@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "scanner"
 
+from . import config as scanner_config
 from .alerts.telegram import render_alert_message, send_telegram_message
 from .ai.minimax_adapter import MiniMaxAdapter
 from .backtest.backtest_runner import run_daily_proxy_2y_backtest, run_intraday_60d_backtest
@@ -242,6 +243,27 @@ def _doctrine_record_fields(doctrine: dict | None) -> dict:
         "doctrine_v2_cost_basis_state": doctrine.get("cost_basis_state"),
         "doctrine_v2_risk_flags": doctrine.get("risk_flags", []),
         "doctrine_v2_diagnostics": doctrine,
+    }
+
+
+def _kronos_research_fields(kronos: KronosAdapter, ticker: str, synthetic: pd.DataFrame, direction, logger) -> dict:
+    """Kronos evaluation for a research candidate, best-effort.
+
+    Research candidates are the only decisions that resolve regularly, so
+    they are where Kronos agreement can earn (or lose) evidence-based trust.
+    """
+    if not scanner_config.KRONOS_RESEARCH_ENABLED or direction not in {"bullish", "bearish"}:
+        return {}
+    try:
+        kr = kronos.evaluate(ticker, synthetic, direction)
+    except Exception as exc:
+        logger.warning("KRONOS_RESEARCH_EVAL_FAILED: %s %s", ticker, exc)
+        return {}
+    return {
+        "kronos_directional_agreement": kr.directional_agreement,
+        "kronos_median_forecast_return_pct": kr.median_forecast_return_pct,
+        "kronos_worst_sampled_return_pct": kr.worst_sampled_return_pct,
+        "kronos_passed": bool(kr.passed),
     }
 
 
@@ -517,9 +539,15 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     if mode == "research_scan":
         research = score_potter_research_candidate(pb, synthetic)
         doctrine = score_potter_doctrine_v2(ticker, synthetic, pb, None)
+        kronos_fields = (
+            _kronos_research_fields(kronos, ticker, synthetic, research.get("direction"), logger)
+            if research.get("passed")
+            else {}
+        )
         rec = {
             **base_record,
             **_doctrine_record_fields(doctrine),
+            **kronos_fields,
             "direction": research.get("direction"),
             "entry_price": research.get("entry_price"),
             "anchor_hour": anchor_hour,
@@ -553,9 +581,13 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
             counter_entry = None
             outcome_status = "not_applicable"
             counterfactual = False
+        kronos_fields = (
+            _kronos_research_fields(kronos, ticker, synthetic, counter_direction, logger) if counterfactual else {}
+        )
         rec = {
             **base_record,
             **_doctrine_record_fields(doctrine),
+            **kronos_fields,
             "direction": counter_direction,
             "entry_price": counter_entry,
             "anchor_hour": anchor_hour,

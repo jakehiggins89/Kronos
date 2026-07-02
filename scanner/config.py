@@ -54,6 +54,11 @@ KRONOS_MODEL_NAME = "NeoQuasar/Kronos-small"
 KRONOS_TOKENIZER_NAME = "NeoQuasar/Kronos-Tokenizer-base"
 KRONOS_LOOKBACK_BARS = 60
 KRONOS_SAMPLE_COUNT = 10
+# Run Kronos on research candidates (a few per day) so the journal
+# accumulates agree/disagree outcome evidence; the strict pipeline only
+# reaches Kronos after the options gate, which historically never happened,
+# so the model's lift was unmeasurable.
+KRONOS_RESEARCH_ENABLED = True
 
 MINIMAX_ENABLED_DEFAULT = False
 MINIMAX_MODEL = "MiniMax-M2.7-highspeed"
