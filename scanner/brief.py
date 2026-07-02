@@ -178,7 +178,13 @@ def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
             f"disagree {_fmt(_num(disagree.get('win_rate')) * 100, 0)}% WR (n={_int(disagree.get('signal_count'))})"
         )
     else:
-        lines.append("- Kronos lift: no scored research candidates yet (accumulating from today forward)")
+        eval_errors = _int(lift.get("rows_with_eval_errors"))
+        if eval_errors > 0:
+            lines.append(
+                f"- Kronos lift: MODEL ERRORS on {eval_errors} resolved candidates (check KRONOS_RESEARCH_EVAL_FAILED in scanner.log)"
+            )
+        else:
+            lines.append("- Kronos lift: no scored research candidates yet (accumulating from today forward)")
     doctrine = policy.get("doctrine_v2", {})
     if _int(doctrine.get('resolved')) > 0:
         current = doctrine.get("current_threshold", {})

@@ -259,12 +259,14 @@ def _kronos_research_fields(kronos: KronosAdapter, ticker: str, synthetic: pd.Da
         kr = kronos.evaluate(ticker, synthetic, direction)
     except Exception as exc:
         logger.warning("KRONOS_RESEARCH_EVAL_FAILED: %s %s", ticker, exc)
-        return {}
+        return {"kronos_eval_error": str(exc)}
     if kr.directional_agreement is None:
         # Model load/inference failure, not a real disagreement - journaling
-        # kronos_passed=False here would poison the lift measurement.
+        # kronos_passed=False here would poison the lift measurement. The
+        # error string keeps a persistent model failure visible in the
+        # journal instead of looking like normal early accumulation.
         logger.warning("KRONOS_RESEARCH_EVAL_FAILED: %s %s", ticker, kr.skip_reason)
-        return {}
+        return {"kronos_eval_error": str(kr.skip_reason)}
     return {
         "kronos_directional_agreement": kr.directional_agreement,
         "kronos_median_forecast_return_pct": kr.median_forecast_return_pct,

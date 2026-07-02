@@ -136,20 +136,25 @@ EDGE_INDEX_EXTRA_UNIVERSE = [
 ]
 
 
+def _as_int(value) -> int:
+    # Accept float-looking strings ("600.0") for int tunables.
+    return int(float(value))
+
+
 # Tunable defaults captured before any override application, so a reload
 # resets keys that were removed from the overrides file instead of keeping
 # stale values until the next process start.
 _TUNABLES = {
     "MIN_RR": (MIN_RR, float),
     "MIN_KRONOS_AGREEMENT": (MIN_KRONOS_AGREEMENT, float),
-    "MIN_EMPTY_SPACE_SCORE": (MIN_EMPTY_SPACE_SCORE, int),
+    "MIN_EMPTY_SPACE_SCORE": (MIN_EMPTY_SPACE_SCORE, _as_int),
     "MAX_ATM_BID_ASK_SPREAD_PCT": (MAX_ATM_BID_ASK_SPREAD_PCT, float),
-    "MIN_ATM_OPEN_INTEREST": (MIN_ATM_OPEN_INTEREST, int),
+    "MIN_ATM_OPEN_INTEREST": (MIN_ATM_OPEN_INTEREST, _as_int),
     "ATR_COMPRESSION": (ATR_COMPRESSION, float),
     "RANGE_COMPRESSION": (RANGE_COMPRESSION, float),
     "NO_TREND_SLOPE_ABS_MAX": (NO_TREND_SLOPE_ABS_MAX, float),
-    "RESEARCH_CANDIDATE_MIN_SCORE": (RESEARCH_CANDIDATE_MIN_SCORE, int),
-    "DOCTRINE_V2_SCORE_BASELINE": (DOCTRINE_V2_SCORE_BASELINE, int),
+    "RESEARCH_CANDIDATE_MIN_SCORE": (RESEARCH_CANDIDATE_MIN_SCORE, _as_int),
+    "DOCTRINE_V2_SCORE_BASELINE": (DOCTRINE_V2_SCORE_BASELINE, _as_int),
 }
 
 

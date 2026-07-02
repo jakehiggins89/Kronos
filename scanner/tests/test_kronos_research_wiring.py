@@ -85,6 +85,7 @@ def test_research_scan_survives_kronos_failure(monkeypatch):
     assert kronos_calls == [("TEST", "bullish")]
     record = captured[0]
     assert "kronos_directional_agreement" not in record
+    assert record["kronos_eval_error"] == "model unavailable"
     assert record["outcome_status"] == "pending"
 
 
@@ -123,6 +124,7 @@ def test_model_failure_is_not_journaled_as_disagreement(monkeypatch):
     record = captured[0]
     assert "kronos_passed" not in record
     assert "kronos_directional_agreement" not in record
+    assert record["kronos_eval_error"] == "Kronos error: model exploded"
 
 
 def _adapter_bars(rows=90):

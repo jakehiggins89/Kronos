@@ -197,6 +197,7 @@ def _build_kronos_lift(rows: list[dict], min_agreement: float) -> dict:
     disagree_block = _metric_block(disagree)
     return {
         "rows_with_kronos": len(scored),
+        "rows_with_eval_errors": sum(1 for row in rows if row.get("kronos_eval_error")),
         "min_agreement": min_agreement,
         "agree": agree_block,
         "disagree": disagree_block,
