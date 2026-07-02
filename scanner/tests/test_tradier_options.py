@@ -126,6 +126,20 @@ def test_without_token_tradier_is_never_called(monkeypatch):
     assert "legacy pipeline reached" in result.skip_reason
 
 
+def test_future_dated_quote_is_not_execution_grade(monkeypatch):
+    # Clock skew / corrupt feed epoch must not read as a fresh quote.
+    tomorrow = int((pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)).timestamp() * 1000)
+    rows = [_chain_row(bid_date=tomorrow)]
+    _patch_tradier(monkeypatch, rows)
+    _block_yfinance(monkeypatch)
+
+    result = options_data.select_options_contract("TEST", "bullish", 10.1, logging.getLogger("test"))
+
+    assert result.passed is True
+    assert result.quote_age_minutes is None
+    assert result.options_data_quality < 0.75
+
+
 def test_stale_tradier_quotes_are_not_execution_grade(monkeypatch):
     two_hours_ago = int((pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=2)).timestamp() * 1000)
     rows = [_chain_row(bid_date=two_hours_ago)]

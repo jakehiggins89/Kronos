@@ -68,9 +68,14 @@ def _quote_age_minutes(timestamp) -> float | None:
         quote_ts = pd.Timestamp(timestamp)
         if quote_ts.tzinfo is None:
             quote_ts = quote_ts.tz_localize("UTC")
-        return max(0.0, float((pd.Timestamp.now(tz="UTC") - quote_ts.tz_convert("UTC")).total_seconds() / 60.0))
+        age = float((pd.Timestamp.now(tz="UTC") - quote_ts.tz_convert("UTC")).total_seconds() / 60.0)
     except Exception:
         return None
+    if age < -5.0:
+        # Future-dated quote: clock skew or a corrupt feed timestamp must
+        # not read as a fresh (execution-grade) quote.
+        return None
+    return max(0.0, age)
 
 
 def _relative_disagreement(first: float | None, second: float | None) -> float | None:

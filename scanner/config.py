@@ -136,47 +136,41 @@ EDGE_INDEX_EXTRA_UNIVERSE = [
 ]
 
 
+# Tunable defaults captured before any override application, so a reload
+# resets keys that were removed from the overrides file instead of keeping
+# stale values until the next process start.
+_TUNABLES = {
+    "MIN_RR": (MIN_RR, float),
+    "MIN_KRONOS_AGREEMENT": (MIN_KRONOS_AGREEMENT, float),
+    "MIN_EMPTY_SPACE_SCORE": (MIN_EMPTY_SPACE_SCORE, int),
+    "MAX_ATM_BID_ASK_SPREAD_PCT": (MAX_ATM_BID_ASK_SPREAD_PCT, float),
+    "MIN_ATM_OPEN_INTEREST": (MIN_ATM_OPEN_INTEREST, int),
+    "ATR_COMPRESSION": (ATR_COMPRESSION, float),
+    "RANGE_COMPRESSION": (RANGE_COMPRESSION, float),
+    "NO_TREND_SLOPE_ABS_MAX": (NO_TREND_SLOPE_ABS_MAX, float),
+    "RESEARCH_CANDIDATE_MIN_SCORE": (RESEARCH_CANDIDATE_MIN_SCORE, int),
+    "DOCTRINE_V2_SCORE_BASELINE": (DOCTRINE_V2_SCORE_BASELINE, int),
+}
+
+
 def _apply_overrides():
-    global MIN_RR
-    global MIN_KRONOS_AGREEMENT
-    global MIN_EMPTY_SPACE_SCORE
-    global MAX_ATM_BID_ASK_SPREAD_PCT
-    global MIN_ATM_OPEN_INTEREST
-    global ATR_COMPRESSION
-    global RANGE_COMPRESSION
-    global NO_TREND_SLOPE_ABS_MAX
-    global RESEARCH_CANDIDATE_MIN_SCORE
-    global DOCTRINE_V2_SCORE_BASELINE
+    payload = {}
+    if OVERRIDES_PATH.exists():
+        try:
+            raw = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload = raw
+        except Exception:
+            payload = {}
 
-    if not OVERRIDES_PATH.exists():
-        return
-    try:
-        payload = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    if not isinstance(payload, dict):
-        return
-
-    if "MIN_RR" in payload:
-        MIN_RR = float(payload["MIN_RR"])
-    if "MIN_KRONOS_AGREEMENT" in payload:
-        MIN_KRONOS_AGREEMENT = float(payload["MIN_KRONOS_AGREEMENT"])
-    if "MIN_EMPTY_SPACE_SCORE" in payload:
-        MIN_EMPTY_SPACE_SCORE = int(payload["MIN_EMPTY_SPACE_SCORE"])
-    if "MAX_ATM_BID_ASK_SPREAD_PCT" in payload:
-        MAX_ATM_BID_ASK_SPREAD_PCT = float(payload["MAX_ATM_BID_ASK_SPREAD_PCT"])
-    if "MIN_ATM_OPEN_INTEREST" in payload:
-        MIN_ATM_OPEN_INTEREST = int(payload["MIN_ATM_OPEN_INTEREST"])
-    if "ATR_COMPRESSION" in payload:
-        ATR_COMPRESSION = float(payload["ATR_COMPRESSION"])
-    if "RANGE_COMPRESSION" in payload:
-        RANGE_COMPRESSION = float(payload["RANGE_COMPRESSION"])
-    if "NO_TREND_SLOPE_ABS_MAX" in payload:
-        NO_TREND_SLOPE_ABS_MAX = float(payload["NO_TREND_SLOPE_ABS_MAX"])
-    if "RESEARCH_CANDIDATE_MIN_SCORE" in payload:
-        RESEARCH_CANDIDATE_MIN_SCORE = int(payload["RESEARCH_CANDIDATE_MIN_SCORE"])
-    if "DOCTRINE_V2_SCORE_BASELINE" in payload:
-        DOCTRINE_V2_SCORE_BASELINE = int(payload["DOCTRINE_V2_SCORE_BASELINE"])
+    for name, (default, caster) in _TUNABLES.items():
+        if name in payload:
+            try:
+                globals()[name] = caster(payload[name])
+                continue
+            except (TypeError, ValueError):
+                pass
+        globals()[name] = default
 
 
 def reload_overrides():

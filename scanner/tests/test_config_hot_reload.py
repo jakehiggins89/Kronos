@@ -42,6 +42,13 @@ def test_reload_overrides_updates_every_tunable(tmp_path, monkeypatch):
         scanner_config.reload_overrides()
         for name, expected in overrides.items():
             assert getattr(scanner_config, name) == expected, name
+
+        # Removing a key from the overrides file must reset it to the
+        # module default on the next reload, not keep the stale value.
+        overrides_path.write_text(json.dumps({}), encoding="utf-8")
+        scanner_config.reload_overrides()
+        for name, (default, _) in scanner_config._TUNABLES.items():
+            assert getattr(scanner_config, name) == default, name
     finally:
         for name, value in snapshot.items():
             setattr(scanner_config, name, value)
