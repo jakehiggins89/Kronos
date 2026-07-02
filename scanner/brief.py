@@ -51,7 +51,7 @@ _ISSUE_GUIDE = {
         "bullish promotion stays blocked until bullish evidence turns positive",
     ),
     "promoted_candidates_direction_blocked": (
-        "Promotions exist only in a direction whose validated edge is negative",
+        "Promotions exist only in directions without proven positive expectancy (negative, under-sampled, or absent validation cohort)",
         "treated as research-only until that direction proves itself",
     ),
 }
@@ -80,6 +80,22 @@ def _fmt(value: Any, digits: int = 2, missing: str = "n/a") -> str:
     return f"{number:.{digits}f}"
 
 
+def _int(value: Any, default: int = 0) -> int:
+    # Reports can carry explicit nulls (hand-edited or older formats), which
+    # .get() defaults do not guard against.
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _num(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines = []
     ranking = audit.get("checks", {}).get("ranking_evidence", {})
@@ -88,7 +104,7 @@ def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines.append(
         f"- Ranking gate ({status}): rank IC {_fmt(value.get('rank_ic'), 3)} "
         f"(need >= {_fmt(value.get('min_rank_ic'), 2)}, p {_fmt(value.get('rank_ic_p_value'), 3)}), "
-        f"top-decile signals {int(value.get('top_decile_signals', 0))}/{int(value.get('min_signals', 20))}, "
+        f"top-decile signals {_int(value.get('top_decile_signals'))}/{_int(value.get('min_signals'), 20)}, "
         f"avg R {_fmt(value.get('top_decile_average_r'))}, t {_fmt(value.get('top_decile_t_stat'))}, "
         f"Wilson-LB precision {_fmt(value.get('top_decile_wilson_lb_precision'))} (need >= 0.45)"
     )
@@ -97,7 +113,7 @@ def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines.append(
         f"- Legacy threshold-{legacy_value.get('threshold', 55)} gate "
         f"({'PASS' if legacy.get('passed') else 'not yet'}): "
-        f"{int(legacy_value.get('signal_count', 0))}/{int(legacy_value.get('min_signals', 20))} signals"
+        f"{_int(legacy_value.get('signal_count'))}/{_int(legacy_value.get('min_signals'), 20)} signals"
     )
     directions = validation.get("by_direction", {})
     if isinstance(directions, dict) and directions:
@@ -109,7 +125,7 @@ def _gate_progress(audit: dict, validation: dict) -> list[str]:
                 continue
             tag = " BLOCKED" if name in blocked else ""
             parts.append(
-                f"{name} n={int(block.get('signal_count', 0))} "
+                f"{name} n={_int(block.get('signal_count'))} "
                 f"avgR {_fmt(block.get('average_r_multiple'))}{tag}"
             )
         if parts:
@@ -141,11 +157,11 @@ def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
     lines = []
     research = policy.get("research_candidates", {})
     lines.append(
-        f"- Journal: {int(research.get('resolved', 0))} resolved research candidates "
-        f"({int(research.get('resolved_outcomes', {}).get('win', 0))}W/"
-        f"{int(research.get('resolved_outcomes', {}).get('loss', 0))}L, "
-        f"{_fmt(float(research.get('resolved_win_rate', 0.0)) * 100, 1)}% WR), "
-        f"{int(diagnostic.get('research_candidates', {}).get('pending', 0))} pending"
+        f"- Journal: {_int(research.get('resolved'))} resolved research candidates "
+        f"({_int(research.get('resolved_outcomes', {}).get('win'))}W/"
+        f"{_int(research.get('resolved_outcomes', {}).get('loss'))}L, "
+        f"{_fmt(_num(research.get('resolved_win_rate')) * 100, 1)}% WR), "
+        f"{_int(diagnostic.get('research_candidates', {}).get('pending'))} pending"
     )
     recommendation = policy.get("recommendation", {})
     lines.append(
@@ -153,22 +169,22 @@ def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
         f"(threshold {research.get('current_threshold', '?')}) -- {recommendation.get('reason', '')}"
     )
     lift = policy.get("kronos_lift", {})
-    if int(lift.get("rows_with_kronos", 0)) > 0:
+    if _int(lift.get('rows_with_kronos')) > 0:
         agree = lift.get("agree", {})
         disagree = lift.get("disagree", {})
         lines.append(
-            f"- Kronos lift: {int(lift.get('rows_with_kronos', 0))} scored -- agree "
-            f"{_fmt(float(agree.get('win_rate', 0.0)) * 100, 0)}% WR (n={int(agree.get('signal_count', 0))}) vs "
-            f"disagree {_fmt(float(disagree.get('win_rate', 0.0)) * 100, 0)}% WR (n={int(disagree.get('signal_count', 0))})"
+            f"- Kronos lift: {_int(lift.get('rows_with_kronos'))} scored -- agree "
+            f"{_fmt(_num(agree.get('win_rate')) * 100, 0)}% WR (n={_int(agree.get('signal_count'))}) vs "
+            f"disagree {_fmt(_num(disagree.get('win_rate')) * 100, 0)}% WR (n={_int(disagree.get('signal_count'))})"
         )
     else:
         lines.append("- Kronos lift: no scored research candidates yet (accumulating from today forward)")
     doctrine = policy.get("doctrine_v2", {})
-    if int(doctrine.get("resolved", 0)) > 0:
+    if _int(doctrine.get('resolved')) > 0:
         current = doctrine.get("current_threshold", {})
         lines.append(
-            f"- Doctrine v2: {int(doctrine.get('resolved', 0))} resolved, baseline cohort "
-            f"{int(current.get('wins', 0))}W/{int(current.get('losses', 0))}L avg {_fmt(current.get('average_return_pct'))}%"
+            f"- Doctrine v2: {_int(doctrine.get('resolved'))} resolved, baseline cohort "
+            f"{_int(current.get('wins'))}W/{_int(current.get('losses'))}L avg {_fmt(current.get('average_return_pct'))}%"
         )
     return lines
 

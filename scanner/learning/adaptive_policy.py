@@ -386,6 +386,19 @@ def _is_loosening(overrides: dict) -> bool:
     return int(proposed) < int(scanner_config.RESEARCH_CANDIDATE_MIN_SCORE)
 
 
+def _parse_meta_timestamp(value: Any) -> pd.Timestamp | None:
+    """Normalize a stored timestamp instead of silently skipping the cooldown."""
+    if not value:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(ts):
+        return None
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
 def apply_adaptive_overrides(report: dict, logger, now: Any = None) -> dict:
     recommendation = report.get("recommendation", {}) if isinstance(report, dict) else {}
     overrides = recommendation.get("proposed_overrides", {})
@@ -403,17 +416,13 @@ def apply_adaptive_overrides(report: dict, logger, now: Any = None) -> dict:
     # change, plus a second confirmation on a later calendar day, so one noisy
     # review cannot walk the threshold down.
     if _is_loosening(overrides):
-        last_change = meta.get("last_auto_change_at")
-        if last_change:
-            try:
-                if (now_ts - pd.Timestamp(last_change)).days < ADAPTIVE_CHANGE_COOLDOWN_DAYS:
-                    record_trial(
-                        "adaptive_policy",
-                        {"recommendation": recommendation, "applied": False, "outcome": "cooldown_active"},
-                    )
-                    return {"status": "cooldown_active", "cooldown_days": ADAPTIVE_CHANGE_COOLDOWN_DAYS}
-            except (TypeError, ValueError):
-                pass
+        last_change_ts = _parse_meta_timestamp(meta.get("last_auto_change_at"))
+        if last_change_ts is not None and (now_ts - last_change_ts).days < ADAPTIVE_CHANGE_COOLDOWN_DAYS:
+            record_trial(
+                "adaptive_policy",
+                {"recommendation": recommendation, "applied": False, "outcome": "cooldown_active"},
+            )
+            return {"status": "cooldown_active", "cooldown_days": ADAPTIVE_CHANGE_COOLDOWN_DAYS}
 
         pending = meta.get("pending_loosen")
         pending = pending if isinstance(pending, dict) else {}

@@ -15,6 +15,7 @@ from ..config import (
 )
 from ..data.market_data import fetch_intraday_bars
 from ..data.synthetic_sessions import build_synthetic_sessions
+from ..edge.outcomes import resolve_trade_risk_pct, walk_triple_barrier
 
 
 def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple[str, float]:
@@ -26,19 +27,45 @@ def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple
     return label, float(ret)
 
 
-def _path_excursions(path: pd.DataFrame, direction: str, entry: float) -> dict | None:
-    """Directional MAE/MFE over the outcome window, when OHLC is available."""
-    if entry <= 0 or path.empty or not {"High", "Low"}.issubset(path.columns):
+def _session_atr_pct(synthetic: pd.DataFrame, position: int, entry: float, lookback: int = 14) -> float:
+    if entry <= 0 or not {"High", "Low"}.issubset(synthetic.columns):
+        return 0.0
+    window = synthetic.iloc[max(0, position - lookback + 1) : position + 1]
+    if window.empty:
+        return 0.0
+    spans = (window["High"] - window["Low"]).dropna()
+    if spans.empty:
+        return 0.0
+    return float(spans.mean() / entry * 100.0)
+
+
+def _triple_barrier_fields(
+    synthetic: pd.DataFrame,
+    start_pos: int,
+    target_pos: int,
+    direction: str,
+    entry: float,
+) -> dict | None:
+    """Same outcome definition as the edge lab, applied to journal decisions.
+
+    Labeling by the sign of the close at horizon called a stopped-out trade a
+    win if price drifted back green - and those labels drive the adaptive
+    policy. Requires OHLC sessions; callers fall back to close-at-horizon
+    when High/Low are unavailable.
+    """
+    if entry <= 0 or not {"High", "Low", "Close"}.issubset(synthetic.columns):
         return None
-    high = float(path["High"].max())
-    low = float(path["Low"].min())
-    if direction == "bullish":
-        mae = ((low - entry) / entry) * 100.0
-        mfe = ((high - entry) / entry) * 100.0
-    else:
-        mae = ((entry - high) / entry) * 100.0
-        mfe = ((entry - low) / entry) * 100.0
-    return {"mae_pct": float(mae), "mfe_pct": float(mfe)}
+    risk = resolve_trade_risk_pct(_session_atr_pct(synthetic, start_pos, entry), 0.0, entry)
+    outcome = walk_triple_barrier(
+        synthetic.iloc[start_pos + 1 : target_pos + 1],
+        direction,
+        entry,
+        risk,
+        2.0 * risk,
+    )
+    if outcome["exit_reason"] == "no_data":
+        return None
+    return outcome
 
 
 def _record_decision_timestamp(record: dict) -> pd.Timestamp:
@@ -105,20 +132,24 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             if target_pos >= len(synthetic):
                 continue
 
+            entry_price = float(rec["entry_price"])
             future_close = float(synthetic.iloc[target_pos]["Close"])
-            outcome, ret5 = _evaluate_result(rec["direction"], float(rec["entry_price"]), future_close)
+            close_label, ret5 = _evaluate_result(rec["direction"], entry_price, future_close)
 
             rec["outcome_status"] = "resolved"
-            rec["outcome_label"] = outcome
             rec["outcome_ret_5bar_pct"] = ret5
-            excursions = _path_excursions(
-                synthetic.iloc[start_pos + 1 : target_pos + 1],
-                rec["direction"],
-                float(rec["entry_price"]),
-            )
-            if excursions is not None:
-                rec["outcome_mae_pct"] = excursions["mae_pct"]
-                rec["outcome_mfe_pct"] = excursions["mfe_pct"]
+            barrier = _triple_barrier_fields(synthetic, start_pos, target_pos, rec["direction"], entry_price)
+            if barrier is not None:
+                rec["outcome_label"] = barrier["label"]
+                rec["outcome_method"] = barrier["method"]
+                rec["outcome_r_multiple"] = barrier["r_multiple"]
+                rec["outcome_exit_reason"] = barrier["exit_reason"]
+                rec["outcome_risk_pct_used"] = barrier["risk_pct_used"]
+                rec["outcome_mae_pct"] = barrier["mae_pct"]
+                rec["outcome_mfe_pct"] = barrier["mfe_pct"]
+            else:
+                rec["outcome_label"] = close_label
+                rec["outcome_method"] = "close_horizon"
             rec["outcome_resolved_at"] = pd.Timestamp.utcnow().isoformat()
             updated += 1
             if rec.get("counterfactual"):

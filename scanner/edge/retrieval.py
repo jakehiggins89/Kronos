@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from ..edge.features import extract_edge_features
+from ..edge.outcomes import resolve_trade_risk_pct, walk_triple_barrier
 from ..strategy.empty_space import score_empty_space
 from ..strategy.potter_box import detect_potter_box, score_potter_research_candidate
 from ..strategy.potter_doctrine import score_potter_doctrine_v2
@@ -129,19 +130,6 @@ def _record_payload(record: EdgeRecord) -> dict[str, Any]:
     return asdict(record)
 
 
-def resolve_trade_risk_pct(risk_pct: float, atr_value: float, entry: float) -> float:
-    """Risk (stop distance, %) with a defined fallback so R-multiples stay sane.
-
-    Empty-space risk can be missing or near zero, which previously produced
-    unbounded R values. Fallback: one ATR, else 2%. Clamped to [0.25, 15].
-    """
-    risk = _finite_float(risk_pct)
-    if risk <= 0.05:
-        atr_pct = (_finite_float(atr_value) / entry) * 100.0 if entry > 0 else 0.0
-        risk = atr_pct if atr_pct > 0.05 else 2.0
-    return float(min(max(risk, 0.25), 15.0))
-
-
 def _future_outcome(
     bars: pd.DataFrame,
     idx: int,
@@ -152,77 +140,25 @@ def _future_outcome(
     target_pct: float = 0.0,
     atr_value: float = 0.0,
 ) -> dict[str, Any]:
-    """Path-aware (triple-barrier) outcome for one historical candidate.
+    """Triple-barrier outcome for one historical candidate.
 
-    A trade plan is stop at -risk_pct, target at +target_pct (default 2R),
-    time exit after `horizon` bars. The old label was the sign of the close
-    exactly `horizon` bars out, which called a stopped-out trade a "win" if
-    price later drifted back green.
+    The old label was the sign of the close exactly `horizon` bars out, which
+    called a stopped-out trade a "win" if price later drifted back green.
     """
-    empty = {
-        "return_pct": 0.0,
-        "label": "loss",
-        "r_multiple": 0.0,
-        "mae_pct": 0.0,
-        "mfe_pct": 0.0,
-        "exit_reason": "no_data",
-        "risk_pct_used": 0.0,
-        "method": "triple_barrier",
-    }
     future = bars.iloc[idx + 1 : idx + 1 + horizon]
     if future.empty or entry <= 0:
-        return empty
-
+        return {
+            "return_pct": 0.0,
+            "label": "loss",
+            "r_multiple": 0.0,
+            "mae_pct": 0.0,
+            "mfe_pct": 0.0,
+            "exit_reason": "no_data",
+            "risk_pct_used": 0.0,
+            "method": "triple_barrier",
+        }
     risk = resolve_trade_risk_pct(risk_pct, atr_value, entry)
-    target = _finite_float(target_pct)
-    if target <= 0.05:
-        target = 2.0 * risk
-
-    sign = 1.0 if direction == "bullish" else -1.0
-    stop_price = entry * (1.0 - sign * risk / 100.0)
-    target_price = entry * (1.0 + sign * target / 100.0)
-
-    exit_reason = "horizon"
-    exit_idx = len(future) - 1
-    ret_pct = sign * ((_finite_float(future["Close"].iloc[-1]) - entry) / entry) * 100.0
-    for pos in range(len(future)):
-        low = _finite_float(future["Low"].iloc[pos])
-        high = _finite_float(future["High"].iloc[pos])
-        stop_touched = low <= stop_price if direction == "bullish" else high >= stop_price
-        target_touched = high >= target_price if direction == "bullish" else low <= target_price
-        if stop_touched:
-            # Same-bar stop+target is unknowable from OHLC: assume the stop.
-            exit_reason = "stop"
-            exit_idx = pos
-            ret_pct = -risk
-            break
-        if target_touched:
-            exit_reason = "target"
-            exit_idx = pos
-            ret_pct = target
-            break
-
-    path = future.iloc[: exit_idx + 1]
-    if direction == "bullish":
-        mae_pct = ((_finite_float(path["Low"].min()) - entry) / entry) * 100.0
-        mfe_pct = ((_finite_float(path["High"].max()) - entry) / entry) * 100.0
-    else:
-        mae_pct = ((entry - _finite_float(path["High"].max())) / entry) * 100.0
-        mfe_pct = ((entry - _finite_float(path["Low"].min())) / entry) * 100.0
-
-    r_multiple = ret_pct / risk
-    r_multiple = min(max(r_multiple, -10.0), 10.0)
-    label = "win" if (exit_reason == "target" or (exit_reason == "horizon" and ret_pct > 0)) else "loss"
-    return {
-        "return_pct": float(ret_pct),
-        "label": label,
-        "r_multiple": float(r_multiple),
-        "mae_pct": float(mae_pct),
-        "mfe_pct": float(mfe_pct),
-        "exit_reason": exit_reason,
-        "risk_pct_used": risk,
-        "method": "triple_barrier",
-    }
+    return walk_triple_barrier(future, direction, entry, risk, _finite_float(target_pct))
 
 
 def build_edge_records_from_bars(

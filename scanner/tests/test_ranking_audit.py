@@ -132,6 +132,7 @@ def test_audit_flags_negative_direction_and_blocks_promotion_in_it():
     research_report = compute_edge_audit_report(validation, _scan(direction="bearish"))
     assert "bearish_edge_negative" in research_report["warnings"]
     assert research_report["summary"]["blocked_directions"] == ["bearish"]
+    assert research_report["summary"]["promotable_directions"] == ["bullish"]
 
     promoted_report = compute_edge_audit_report(validation, _scan(direction="bearish", recommendation="promote"))
     assert promoted_report["readiness"] == "research_only"
@@ -139,3 +140,26 @@ def test_audit_flags_negative_direction_and_blocks_promotion_in_it():
 
     bullish_promoted = compute_edge_audit_report(validation, _scan(direction="bullish", recommendation="promote"))
     assert bullish_promoted["readiness"] == "paper_trade_only"
+
+
+def test_audit_treats_undersampled_direction_as_unproven_not_safe():
+    # n=14 bearish with terrible avg R sits below min_direction_samples; the
+    # guardrail must fail CLOSED for promotion, not open.
+    validation = _validation_with_ranking(bearish_avg_r=-3.0, bearish_n=14)
+
+    promoted_report = compute_edge_audit_report(validation, _scan(direction="bearish", recommendation="promote"))
+
+    assert "bearish" not in promoted_report["summary"]["promotable_directions"]
+    assert promoted_report["readiness"] == "research_only"
+    assert "promoted_candidates_direction_blocked" in promoted_report["warnings"]
+
+
+def test_audit_blocks_promotion_when_direction_history_is_absent():
+    validation = _validation_with_ranking()
+    validation.pop("by_direction")
+
+    promoted_report = compute_edge_audit_report(validation, _scan(direction="bearish", recommendation="promote"))
+
+    assert promoted_report["summary"]["promotable_directions"] == []
+    assert promoted_report["readiness"] == "research_only"
+    assert "promoted_candidates_direction_blocked" in promoted_report["warnings"]

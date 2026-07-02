@@ -106,6 +106,43 @@ def test_bearish_direction_mirrors_barriers():
     assert outcome["return_pct"] == 4.0
 
 
+def test_gap_through_stop_uses_open_fill_not_stop_price():
+    # Entry 100, risk 2% -> stop 98, but the exit bar OPENS at 90. Flooring
+    # the loss at -1R flattered the expectancy that gates promotion.
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [90, 92, 85, 88, 1000],  # gap-down open straight through the stop
+            [88, 90, 86, 89, 1000],
+            [89, 91, 87, 90, 1000],
+            [90, 92, 88, 91, 1000],
+            [91, 93, 89, 92, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "stop"
+    assert outcome["return_pct"] == -10.0
+    assert outcome["r_multiple"] == -5.0
+
+
+def test_gap_through_target_stays_capped_at_target():
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [106, 108, 105, 107, 1000],  # favorable gap beyond the 104 target
+            [107, 108, 106, 107, 1000],
+            [107, 108, 106, 107, 1000],
+            [107, 108, 106, 107, 1000],
+            [107, 108, 106, 107, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+
+    assert outcome["exit_reason"] == "target"
+    assert outcome["return_pct"] == 4.0  # conservative side of a favorable gap
+
+
 def test_risk_fallback_uses_atr_then_default():
     assert resolve_trade_risk_pct(0.0, atr_value=1.5, entry=100.0) == 1.5
     assert resolve_trade_risk_pct(0.0, atr_value=0.0, entry=100.0) == 2.0
@@ -146,7 +183,9 @@ def _patch_reviewer(monkeypatch, tmp_path, synthetic):
     )
 
 
-def test_review_records_path_excursions(monkeypatch, tmp_path):
+def test_review_applies_triple_barrier_to_journal_outcomes(monkeypatch, tmp_path):
+    # Session ATR proxy: (High-Low)=0.5 on a 10.0 entry -> risk 5%, target 10%
+    # (11.0). Session 2's high (11.2) hits the target first.
     records = [
         {
             "ticker": "TEST",
@@ -162,8 +201,37 @@ def test_review_records_path_excursions(monkeypatch, tmp_path):
     reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
 
     assert summary["resolved_now"] == 1
-    assert reviewed[0]["outcome_mae_pct"] == pytest.approx(2.0)  # lowest low 10.2 vs entry 10
-    assert reviewed[0]["outcome_mfe_pct"] == pytest.approx(27.0)  # highest high 12.7 vs entry 10
+    record = reviewed[0]
+    assert record["outcome_method"] == "triple_barrier"
+    assert record["outcome_label"] == "win"
+    assert record["outcome_exit_reason"] == "target"
+    assert record["outcome_risk_pct_used"] == pytest.approx(5.0)
+    assert record["outcome_r_multiple"] == pytest.approx(2.0)
+    assert record["outcome_ret_5bar_pct"] == pytest.approx(25.0)  # legacy metric preserved
+    assert record["outcome_mae_pct"] == pytest.approx(2.0)  # path low 10.2 vs entry, up to exit
+    assert record["outcome_mfe_pct"] == pytest.approx(12.0)  # path high 11.2 vs entry, up to exit
+
+
+def test_review_falls_back_to_close_horizon_without_ohlc(monkeypatch, tmp_path):
+    closes_only = _synthetic_sessions()[["Close"]]
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-06-24T19:03:00-04:00",
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+    _patch_reviewer(monkeypatch, tmp_path, closes_only)
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["resolved_now"] == 1
+    assert reviewed[0]["outcome_method"] == "close_horizon"
+    assert reviewed[0]["outcome_label"] == "win"
+    assert reviewed[0]["outcome_ret_5bar_pct"] == pytest.approx(25.0)
 
 
 def test_review_expires_pending_older_than_resolution_window(monkeypatch, tmp_path):

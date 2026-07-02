@@ -123,7 +123,11 @@ def compute_edge_audit_report(
     # of signals, so ranking skill over all samples is an equal path.
     evidence_supported = checks["validation_threshold"]["passed"] or checks["ranking_evidence"]["passed"]
 
+    # Promotion needs a direction PROVEN positive; under-sampled or absent
+    # direction evidence is "unproven", not "safe" - failing open here would
+    # let a thin cohort promote exactly when the data is weakest.
     blocked_directions: list[str] = []
+    promotable_directions: list[str] = []
     by_direction = validation_report.get("by_direction", {})
     if isinstance(by_direction, dict):
         for direction, block in sorted(by_direction.items()):
@@ -133,6 +137,8 @@ def compute_edge_audit_report(
             direction_avg_r = _finite_float(block.get("average_r_multiple"))
             if direction_samples >= min_direction_samples and direction_avg_r < 0.0:
                 blocked_directions.append(direction)
+            elif direction_samples >= min_direction_samples and direction_avg_r > 0.0:
+                promotable_directions.append(direction)
 
     blockers: list[str] = []
     if not checks["purged_walk_forward"]["passed"]:
@@ -172,7 +178,7 @@ def compute_edge_audit_report(
     for direction in blocked_directions:
         warnings.append(f"{direction}_edge_negative")
 
-    eligible_promoted = [row for row in promoted_candidates if str(row.get("direction")) not in blocked_directions]
+    eligible_promoted = [row for row in promoted_candidates if str(row.get("direction")) in promotable_directions]
     if promoted_candidates and not eligible_promoted:
         warnings.append("promoted_candidates_direction_blocked")
 
@@ -197,6 +203,7 @@ def compute_edge_audit_report(
             "research_candidates": len(research_candidates),
             "promoted_candidates": len(promoted_candidates),
             "blocked_directions": blocked_directions,
+            "promotable_directions": promotable_directions,
             "low_feed_confidence_candidates": low_feed_candidates,
             "missing_options_liquidity_candidates": missing_liquidity_candidates,
             "non_execution_grade_options_candidates": non_execution_options_candidates,
