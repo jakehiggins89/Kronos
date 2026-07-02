@@ -1,5 +1,6 @@
 import pandas as pd
 
+from scanner import config
 from scanner.strategy.potter_box import detect_potter_box, score_potter_research_candidate
 
 
@@ -48,3 +49,20 @@ def test_research_candidate_scores_near_breakout():
     assert candidate["direction"] == "bullish"
     assert candidate["score"] > 0
     assert candidate["breakout_state"] in {"near_breakout", "confirmed_breakout"}
+
+
+def test_research_candidate_uses_current_runtime_threshold(monkeypatch):
+    df = _make_synthetic_df()
+    df.iloc[-1, df.columns.get_loc("Close")] = 100.7
+    df.iloc[-1, df.columns.get_loc("High")] = 101.0
+    df.iloc[-1, df.columns.get_loc("Volume")] = 2000
+    result = detect_potter_box("TEST", df)
+
+    score = score_potter_research_candidate(result, df)["score"]
+    monkeypatch.setattr(config, "RESEARCH_CANDIDATE_MIN_SCORE", score + 1)
+
+    candidate = score_potter_research_candidate(result, df)
+
+    assert candidate["passed"] is False
+    assert candidate["reason"] == "score below research threshold"
+    assert candidate["min_score"] == score + 1

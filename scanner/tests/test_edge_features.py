@@ -60,3 +60,26 @@ def test_extract_edge_features_records_option_provenance():
     assert features["options_quote_age_minutes"] == 4.0
     assert features["options_data_quality"] == 0.6
     assert features["data_delay_minutes"] == 16.0
+
+
+def test_extract_edge_features_records_doctrine_v2_state():
+    bars = _bars()
+    pb = detect_potter_box("TEST", bars)
+    doctrine_v2 = {
+        "passed": True,
+        "score": 78,
+        "punchback_state": "reclaim",
+        "cost_basis_state": "held",
+        "box_stack_score": 10.0,
+        "risk_flags": [],
+    }
+
+    features = extract_edge_features("TEST", bars, pb, doctrine_v2=doctrine_v2)
+
+    assert features["doctrine_v2_passed"] == 1.0
+    assert features["doctrine_v2_score"] == 78.0
+    assert features["doctrine_v2_box_stack_score"] == 10.0
+    assert features["doctrine_v2_punchback_reclaim"] == 1.0
+    assert features["doctrine_v2_failed_reentry"] == 0.0
+    assert features["punchback_state"] == "reclaim"
+    assert features["cost_basis_state"] == "held"

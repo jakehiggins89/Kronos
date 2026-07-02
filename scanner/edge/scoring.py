@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from .. import config as scanner_config
+
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -17,6 +19,14 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _ordered_unique(reasons: list[str]) -> list[str]:
+    out: list[str] = []
+    for reason in reasons:
+        if reason not in out:
+            out.append(reason)
+    return out
 
 
 def _analog_summary(analogs: list[dict]) -> dict[str, float]:
@@ -63,11 +73,24 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     feed_confidence = _finite_float(features.get("feed_confidence"), 0.5)
     options_spread = _finite_float(features.get("options_spread_pct"))
     options_data_quality = _finite_float(features.get("options_data_quality"), 0.45)
+    doctrine_v2 = 0.0
+    if "doctrine_v2_score" in features:
+        doctrine_score = _finite_float(features.get("doctrine_v2_score"))
+        doctrine_passed = bool(features.get("doctrine_v2_passed"))
+        doctrine_failed = bool(features.get("doctrine_v2_failed_reentry"))
+        doctrine_v2 = _clamp(
+            ((doctrine_score - float(scanner_config.DOCTRINE_V2_SCORE_BASELINE)) * 0.35)
+            + (6.0 if doctrine_passed else 0.0)
+            - (15.0 if doctrine_failed else 0.0),
+            -15.0,
+            15.0,
+        )
 
     scorecard = {
         "base": 30.0,
         "setup_quality": _clamp((research_score * 0.15) + (5.0 if potter_passed else 0.0) + (empty_space_score * 2.0), 0.0, 24.0),
         "setup_gate": 0.0 if setup_gate_passed else -25.0,
+        "doctrine_v2": doctrine_v2,
         "reward_risk": _clamp(rr_ratio * 4.0, 0.0, 12.0),
         "analog_expectancy": _clamp((summary["average_r_multiple"] * 25.0) + ((summary["win_rate"] - 0.5) * 20.0), -30.0, 35.0),
         "kronos": _clamp(((kronos_agreement - 0.5) * 20.0) + _clamp(kronos_median, -5.0, 5.0), -12.0, 12.0),
@@ -97,9 +120,33 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     else:
         recommendation = "reject"
 
+    blocking_reasons = []
+    if not setup_gate_passed:
+        blocking_reasons.append("setup_gate_failed")
+    if summary["count"] < min_analogs:
+        blocking_reasons.append("insufficient_analogs")
+    if summary["average_r_multiple"] <= 0.0:
+        blocking_reasons.append("non_positive_analog_expectancy")
+    if data_quality < 0.5:
+        blocking_reasons.append("low_data_quality")
+    if feed_confidence < 0.35:
+        blocking_reasons.append("low_feed_confidence")
+    if options_spread > 0.12:
+        blocking_reasons.append("wide_options_spread")
+    if options_data_quality < 0.75:
+        blocking_reasons.append("options_data_not_execution_grade")
+    if edge_score < 45.0:
+        blocking_reasons.append("edge_score_below_research_threshold")
+    elif edge_score < 65.0:
+        blocking_reasons.append("edge_score_below_promotion_threshold")
+    blocking_reasons = _ordered_unique(blocking_reasons)
+    rejection_reasons = blocking_reasons if recommendation == "reject" else []
+
     return {
         "edge_score": edge_score,
         "recommendation": recommendation,
         "scorecard": {key: round(float(value), 4) for key, value in scorecard.items()},
         "analog_summary": summary,
+        "blocking_reasons": blocking_reasons,
+        "rejection_reasons": rejection_reasons,
     }

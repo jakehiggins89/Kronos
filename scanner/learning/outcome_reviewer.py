@@ -19,6 +19,28 @@ def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple
     return label, float(ret)
 
 
+def _record_decision_timestamp(record: dict) -> pd.Timestamp:
+    value = record.get("decision_ts") or record.get("entry_timestamp") or record.get("created_at")
+    created = pd.Timestamp(value)
+    if pd.isna(created):
+        raise ValueError("decision timestamp is missing")
+    if created.tzinfo is None:
+        return created.tz_localize(TIMEZONE)
+    return created.tz_convert(TIMEZONE)
+
+
+def _decision_session_position(index: pd.Index, created: pd.Timestamp) -> int:
+    sessions = pd.DatetimeIndex(index)
+    if sessions.empty:
+        return -1
+    decision_ts = created
+    if sessions.tz is not None:
+        decision_ts = decision_ts.tz_convert(sessions.tz)
+    else:
+        decision_ts = decision_ts.tz_localize(None)
+    return int(sessions.searchsorted(decision_ts, side="right")) - 1
+
+
 def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], dict]:
     now = pd.Timestamp.now(tz=TIMEZONE)
     updated = 0
@@ -36,11 +58,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
                 skipped += 1
                 continue
 
-            created = pd.Timestamp(rec.get("decision_ts"))
-            if created.tzinfo is None:
-                created = created.tz_localize(TIMEZONE)
-            else:
-                created = created.tz_convert(TIMEZONE)
+            created = _record_decision_timestamp(rec)
 
             if (now - created).days < OUTCOME_MIN_AGE_DAYS:
                 continue
@@ -50,10 +68,9 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             if synthetic.empty:
                 continue
 
-            base_idx = synthetic.index.get_indexer([created], method="nearest")
-            if len(base_idx) == 0 or base_idx[0] < 0:
+            start_pos = _decision_session_position(synthetic.index, created)
+            if start_pos < 0:
                 continue
-            start_pos = int(base_idx[0])
             target_pos = start_pos + PRED_DAYS
             if target_pos >= len(synthetic):
                 continue

@@ -52,6 +52,8 @@ scanner\run_scanner.bat --mode test_minimax --test_message "MiniMax connectivity
 scanner\run_scanner.bat --mode review_outcomes
 scanner\run_scanner.bat --mode autotune
 scanner\run_scanner.bat --mode autotune --apply_tuning
+scanner\run_scanner.bat --mode adaptive_policy
+scanner\run_scanner.bat --mode adaptive_policy --apply_tuning
 scanner\run_scanner.bat --mode replay_eval --replay_dataset "C:\Users\Jacob Higgins\projects\kronos-predictor\scanner\replay\sample_replay_dataset.json"
 scanner\run_scanner.bat --mode research_scan
 scanner\run_scanner.bat --mode diagnose_zero_results
@@ -95,6 +97,7 @@ Equivalent Python commands:
 - Zero-result diagnostic at `scanner\reports\zero_result_diagnostic.json`.
 - Edge Evidence Lab runs at `scanner\reports\evidence\<run_id>\manifest.json`.
 - Edge readiness audit at `scanner\reports\edge_audit_report.json`.
+- Adaptive policy report at `scanner\reports\adaptive_policy_report.json`.
 
 ## Edge Evidence Lab
 `run_edge_lab` executes the full research loop in one local run:
@@ -109,8 +112,15 @@ Edge validation uses purged walk-forward analogs: historical candidates are scor
 
 Research recommendations are gated by live setup quality. Strong historical analogs cannot promote or research-label a candidate when both Potter Box and Empty Space gates fail.
 
+### Potter Doctrine v2 Features
+The edge feature vector includes a research-only Potter Doctrine v2 score. It records punchback/retest reclaim state, failed reentry risk, cost-basis hold/reclaim/loss state, and overlap-box stack alignment. These fields are written into edge features and decision records so analog retrieval, scorecards, zero-result diagnostics, and future adaptive policy work can learn from failed or near-miss setups.
+
+Doctrine v2 can improve research ranking, but it does not bypass live safety gates. Promotion still requires setup gates, enough analog samples, positive expectancy, usable feed confidence, and execution-grade options data quality.
+
+`adaptive_policy --apply_tuning` may safely tighten `DOCTRINE_V2_SCORE_BASELINE` when resolved doctrine-scored research candidates are loss-heavy. It only tightens the baseline; it does not automatically lower doctrine standards.
+
 ## Research Operations
-`research_ops` is the repeatable evidence-maintenance cycle. It backs up and deduplicates the decision journal, resolves aged outcomes, collects a fresh delayed-SIP research scan, runs diagnostics and bounded autotuning, refreshes the complete edge lab, and writes `scanner\reports\research_ops_report.json`.
+`research_ops` is the repeatable evidence-maintenance cycle. It backs up and deduplicates the decision journal, resolves aged outcomes, collects a fresh delayed-SIP research scan, runs diagnostics, runs bounded autotuning, applies only safe adaptive-policy overrides, refreshes the complete edge lab, and writes `scanner\reports\research_ops_report.json`.
 
 ```bat
 .\venv\Scripts\python.exe -m scanner.main --mode research_ops
@@ -135,6 +145,18 @@ The free-data ensemble records stock provider/feed/delay plus option provider/fe
 4. Run `--mode autotune --apply_tuning` to persist safe overrides into `scanner\tuning\overrides.json`.
 5. Restart scanner process so new thresholds are loaded from overrides.
 
+## Adaptive Policy Loop
+`adaptive_policy` evaluates resolved research candidates by score threshold and outcome quality. It uses conservative win-rate confidence bounds and average return checks before recommending any improvement threshold. When the resolved research cohort is loss-heavy, it may safely tighten `RESEARCH_CANDIDATE_MIN_SCORE`; it does not loosen live gates or promote signals without evidence.
+
+The same report includes a `doctrine_v2` section with threshold cohorts, punchback-state outcomes, cost-basis-state outcomes, and risk flag counts. When Doctrine v2 evidence is loss-heavy at the current baseline, the safe auto-action is to raise `DOCTRINE_V2_SCORE_BASELINE`.
+
+```bat
+.\venv\Scripts\python.exe -m scanner.main --mode adaptive_policy
+.\venv\Scripts\python.exe -m scanner.main --mode adaptive_policy --apply_tuning
+```
+
+`research_ops` runs this stage with safe application enabled, so repeated maintenance cycles can automatically reduce bad research candidates while keeping live alerts fail-closed.
+
 How learning records behave:
 - Passed alerts are recorded as live decisions.
 - Skipped setups can be recorded as counterfactual decisions (when direction/entry can be inferred) so missed calls can be evaluated later.
@@ -149,6 +171,7 @@ Suggested automation cadence:
 - Daily after close: `review_outcomes`.
 - Daily after review: `diagnose_zero_results`.
 - Daily after review: `autotune --apply_tuning`.
+- Daily after review: `adaptive_policy --apply_tuning`, or run `research_ops` to include it automatically.
 
 Research mode:
 - `research_scan` logs graded near-miss Potter candidates as pending counterfactuals.

@@ -15,6 +15,11 @@ Source inputs used:
    - control top/bottom
    - touch count and tolerance
    - breakout open and whether open was outside control zone
+7. Potter Doctrine v2 research scoring captures:
+   - punchback/retest reclaim versus failed reentry
+   - cost-basis held/reclaimed/lost state
+   - overlap-box stack alignment across short/medium/long lookbacks
+   - risk flags and score diagnostics in edge features and decision records
 
 ## Default Parameters
 - `MIN_BOX_TOP_TOUCHES = 2`
@@ -22,10 +27,10 @@ Source inputs used:
 - `BOX_TOUCH_TOLERANCE_PCT = 0.0015`
 - `USE_CLOSE_BASED_CONTROL = True`
 
-## Not Yet Fully Encoded
-1. Full "punchback chain reaction" state machine across nested boxes.
-2. Explicit overlap-box hierarchy scoring.
-3. Timeframe-conditioned rules (24h primary, 4h support) in one unified signal model.
-4. Pattern aging rules from transcript (e.g., 2-4 day consolidation cadence) as hard constraints.
+## Still Not Fully Encoded
+1. Full "punchback chain reaction" state machine across nested boxes; v2 currently scores the latest retest/reclaim state.
+2. Explicit multi-timeframe hierarchy scoring (24h primary, 4h support) in one unified signal model.
+3. Pattern aging rules from transcript (e.g., 2-4 day consolidation cadence) as hard constraints.
+4. Audited external win-rate replication; public Potter materials are treated as strategy inspiration, not proof.
 
 These can be added once more labeled chart examples and desired strictness are finalized.

@@ -34,6 +34,7 @@ MIN_BOX_BOTTOM_TOUCHES = 2
 BOX_TOUCH_TOLERANCE_PCT = 0.0015
 USE_CLOSE_BASED_CONTROL = True
 RESEARCH_CANDIDATE_MIN_SCORE = 62
+DOCTRINE_V2_SCORE_BASELINE = 70
 RESEARCH_NEAR_BREAKOUT_PCT = 0.012
 RESEARCH_MIN_VOLUME_EXPANSION = 1.15
 PRED_DAYS = 5
@@ -86,6 +87,7 @@ ATR_COMPRESSION_BOUNDS = (0.55, 1.10)
 RANGE_COMPRESSION_BOUNDS = (0.45, 1.05)
 NO_TREND_SLOPE_ABS_MAX_BOUNDS = (0.0008, 0.0040)
 RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS = (45, 80)
+DOCTRINE_V2_SCORE_BASELINE_BOUNDS = (60, 90)
 
 DEFAULT_WATCHLIST = [
     "SOFI", "MARA", "RIOT", "HIMS", "TTD",
@@ -107,6 +109,7 @@ def _apply_overrides():
     global RANGE_COMPRESSION
     global NO_TREND_SLOPE_ABS_MAX
     global RESEARCH_CANDIDATE_MIN_SCORE
+    global DOCTRINE_V2_SCORE_BASELINE
 
     if not OVERRIDES_PATH.exists():
         return
@@ -135,6 +138,13 @@ def _apply_overrides():
         NO_TREND_SLOPE_ABS_MAX = float(payload["NO_TREND_SLOPE_ABS_MAX"])
     if "RESEARCH_CANDIDATE_MIN_SCORE" in payload:
         RESEARCH_CANDIDATE_MIN_SCORE = int(payload["RESEARCH_CANDIDATE_MIN_SCORE"])
+    if "DOCTRINE_V2_SCORE_BASELINE" in payload:
+        DOCTRINE_V2_SCORE_BASELINE = int(payload["DOCTRINE_V2_SCORE_BASELINE"])
+
+
+def reload_overrides():
+    """Refresh in-process tuning values after an override file is updated."""
+    _apply_overrides()
 
 
 _apply_overrides()

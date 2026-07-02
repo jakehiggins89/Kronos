@@ -63,6 +63,7 @@ from .edge.retrieval import EdgeAnalogIndex, EdgeRecord, build_edge_records_from
 from .edge.scoring import score_edge_candidate
 from .edge.validation import compute_edge_validation_report
 from .evidence.store import EvidenceRun, start_evidence_run
+from .learning.adaptive_policy import apply_adaptive_overrides, build_adaptive_policy_report
 from .learning.autotuner import apply_overrides, propose_overrides
 from .learning.outcome_reviewer import review_pending_outcomes
 from .learning.outcome_store import DECISIONS_PATH, append_decision, deduplicate_decisions, load_decisions, save_decisions
@@ -70,6 +71,7 @@ from .learning.replay_runner import run_replay_eval
 from .models.kronos_adapter import KronosAdapter
 from .strategy.empty_space import score_empty_space
 from .strategy.potter_box import detect_potter_box, score_potter_research_candidate
+from .strategy.potter_doctrine import score_potter_doctrine_v2
 from .tickers import WATCHLIST
 from .utils.logging_setup import setup_logging
 from .utils.validation import AlertCandidate
@@ -147,6 +149,7 @@ def parse_args() -> argparse.Namespace:
             "test_minimax",
             "review_outcomes",
             "autotune",
+            "adaptive_policy",
             "replay_eval",
             "research_scan",
             "diagnose_zero_results",
@@ -219,6 +222,18 @@ def _data_provenance(bars: pd.DataFrame | None) -> dict:
     }
 
 
+def _doctrine_record_fields(doctrine: dict | None) -> dict:
+    doctrine = doctrine if isinstance(doctrine, dict) else {}
+    return {
+        "doctrine_v2_score": doctrine.get("score"),
+        "doctrine_v2_passed": bool(doctrine.get("passed")),
+        "doctrine_v2_punchback_state": doctrine.get("punchback_state"),
+        "doctrine_v2_cost_basis_state": doctrine.get("cost_basis_state"),
+        "doctrine_v2_risk_flags": doctrine.get("risk_flags", []),
+        "doctrine_v2_diagnostics": doctrine,
+    }
+
+
 def _infer_direction_for_counterfactual(pb) -> str | None:
     if pb.direction in {"bullish", "bearish"}:
         return pb.direction
@@ -240,8 +255,11 @@ def _write_zero_result_diagnostic(logger) -> dict:
     from collections import Counter
 
     rows = load_decisions()
+    strict_rows = [r for r in rows if r.get("mode") in {"dry_run", "live"}]
     status_counts = Counter(r.get("outcome_status", "unknown") for r in rows)
     stage_counts = Counter(str(r.get("stage_failed") or "none") for r in rows)
+    final_pass_counts = Counter("pass" if r.get("final_pass") else "fail" for r in rows)
+    strict_stage_counts = Counter(str(r.get("stage_failed") or "none") for r in strict_rows)
     resolved = [r for r in rows if r.get("outcome_status") == "resolved"]
     labels = Counter(r.get("outcome_label", "unknown") for r in resolved)
     stage_labels = Counter(f"{r.get('stage_failed') or 'none'}:{r.get('outcome_label')}" for r in resolved)
@@ -251,15 +269,110 @@ def _write_zero_result_diagnostic(logger) -> dict:
     correct_skips = [
         r for r in resolved if not r.get("final_pass") and r.get("outcome_label") == "loss"
     ]
+
+    def research_diagnostics(row: dict) -> dict:
+        diagnostics = row.get("research_diagnostics")
+        return diagnostics if isinstance(diagnostics, dict) else {}
+
+    def is_research_candidate(row: dict) -> bool:
+        diagnostics = research_diagnostics(row)
+        return bool(diagnostics.get("passed")) or row.get("skip_reason") == "research_candidate"
+
+    def score_bucket(score) -> str:
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return "missing"
+        if value < 45:
+            return "below_45"
+        if value < 62:
+            return "45_to_61"
+        if value < 70:
+            return "62_to_69"
+        return "70_plus"
+
+    research_candidates = [r for r in rows if is_research_candidate(r)]
+    resolved_research_candidates = [r for r in research_candidates if r.get("outcome_status") == "resolved"]
+    research_candidate_labels = Counter(r.get("outcome_label", "unknown") for r in resolved_research_candidates)
+    research_candidate_returns = []
+    for row in resolved_research_candidates:
+        try:
+            research_candidate_returns.append(float(row.get("outcome_ret_5bar_pct")))
+        except (TypeError, ValueError):
+            continue
+    research_candidate_resolved_count = sum(research_candidate_labels.values())
+    research_candidate_win_rate = (
+        research_candidate_labels.get("win", 0) / research_candidate_resolved_count
+        if research_candidate_resolved_count
+        else None
+    )
+    research_award_counts = Counter()
+    for row in research_candidates:
+        reasons = research_diagnostics(row).get("reasons", [])
+        if not isinstance(reasons, list):
+            continue
+        research_award_counts.update(str(reason) for reason in reasons)
+    potter_research_reason_counts = Counter(
+        str(research_diagnostics(row).get("reason") or "missing")
+        for row in strict_rows
+        if row.get("stage_failed") == "potter_box"
+    )
+    score_buckets = Counter(score_bucket(row.get("research_score")) for row in rows)
+
+    bottleneck_counts = strict_stage_counts if strict_stage_counts else stage_counts
+    primary_bottleneck_stage = bottleneck_counts.most_common(1)[0][0] if bottleneck_counts else "none"
+    if not resolved_research_candidates:
+        research_edge_status = "insufficient_resolved"
+    elif research_candidate_labels.get("loss", 0) > research_candidate_labels.get("win", 0):
+        research_edge_status = "loss_heavy"
+    elif research_candidate_labels.get("win", 0) > research_candidate_labels.get("loss", 0):
+        research_edge_status = "positive"
+    else:
+        research_edge_status = "mixed"
+    if research_edge_status == "positive":
+        live_gate_action = "review_edge_validation_before_live"
+    elif research_candidates:
+        live_gate_action = "do_not_loosen_without_validated_edge"
+    else:
+        live_gate_action = "continue_research_scan"
+
     payload = {
         "mode": "diagnose_zero_results",
         "total_records": len(rows),
         "outcome_status_counts": dict(status_counts),
+        "final_pass_counts": dict(final_pass_counts),
         "resolved_label_counts": dict(labels),
         "stage_counts": dict(stage_counts.most_common()),
         "resolved_stage_label_counts": dict(stage_labels.most_common()),
         "missed_winners": len(missed_winners),
         "correct_skips": len(correct_skips),
+        "strict_path": {
+            "modes": ["dry_run", "live"],
+            "records": len(strict_rows),
+            "final_pass_counts": dict(Counter("pass" if r.get("final_pass") else "fail" for r in strict_rows)),
+            "stage_counts": dict(strict_stage_counts.most_common()),
+        },
+        "research_candidates": {
+            "records": len(research_candidates),
+            "resolved": research_candidate_resolved_count,
+            "pending": sum(1 for r in research_candidates if r.get("outcome_status") == "pending"),
+            "not_applicable": sum(1 for r in research_candidates if r.get("outcome_status") == "not_applicable"),
+            "resolved_outcomes": dict(research_candidate_labels),
+            "resolved_win_rate": research_candidate_win_rate,
+            "average_outcome_ret_5bar_pct": (
+                round(sum(research_candidate_returns) / len(research_candidate_returns), 4)
+                if research_candidate_returns
+                else None
+            ),
+        },
+        "research_score_buckets": dict(score_buckets),
+        "potter_research_reason_counts": dict(potter_research_reason_counts.most_common()),
+        "research_award_counts": dict(research_award_counts.most_common()),
+        "diagnostic_summary": {
+            "primary_bottleneck_stage": primary_bottleneck_stage,
+            "research_edge_status": research_edge_status,
+            "recommended_live_gate_action": live_gate_action,
+        },
         "diagnosis": (
             "potter_box gate is the primary bottleneck; use research_scan to collect graded candidates"
             if stage_counts.get("potter_box", 0) or stage_counts.get("potter_box_research", 0)
@@ -392,8 +505,10 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     pb = detect_potter_box(ticker, synthetic)
     if mode == "research_scan":
         research = score_potter_research_candidate(pb, synthetic)
+        doctrine = score_potter_doctrine_v2(ticker, synthetic, pb, None)
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "direction": research.get("direction"),
             "entry_price": research.get("entry_price"),
             "anchor_hour": anchor_hour,
@@ -416,6 +531,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
 
     if not pb.passed or pb.direction is None:
         research = score_potter_research_candidate(pb, synthetic)
+        doctrine = score_potter_doctrine_v2(ticker, synthetic, pb, None)
         if research.get("passed"):
             counter_direction = research.get("direction")
             counter_entry = research.get("entry_price")
@@ -428,6 +544,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
             counterfactual = False
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "direction": counter_direction,
             "entry_price": counter_entry,
             "anchor_hour": anchor_hour,
@@ -444,9 +561,11 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
         return {"ticker": ticker, "status": "skip", "reason": pb.skip_reason or "potter_box_failed"}
 
     es = score_empty_space(synthetic, pb.direction, pb.breakout_close, pb.cost_basis)
+    doctrine = score_potter_doctrine_v2(ticker, synthetic, pb, es)
     if not es.passed:
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "stage_failed": "empty_space",
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -464,6 +583,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     if not ev.passed:
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "stage_failed": "event_risk",
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -481,6 +601,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     if not opt.passed:
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "stage_failed": "options",
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -498,6 +619,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     if not kr.passed:
         rec = {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "stage_failed": "kronos",
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -550,6 +672,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
     append_decision(
         {
             **base_record,
+            **_doctrine_record_fields(doctrine),
             "final_pass": True,
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -838,6 +961,34 @@ def _write_edge_report(path: Path, payload: dict, logger=None) -> dict:
     return payload
 
 
+def _scanner_tz_timestamp(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize(TIMEZONE)
+    return ts.tz_convert(TIMEZONE)
+
+
+def _equity_market_elapsed_minutes(start, end) -> int:
+    start_ts = _scanner_tz_timestamp(start)
+    end_ts = _scanner_tz_timestamp(end)
+    if end_ts <= start_ts:
+        return 0
+
+    total_minutes = 0
+    day = start_ts.normalize()
+    end_day = end_ts.normalize()
+    while day <= end_day:
+        if day.dayofweek < 5:
+            market_open = day + pd.Timedelta(hours=9, minutes=30)
+            market_close = day + pd.Timedelta(hours=16)
+            window_start = max(start_ts, market_open)
+            window_end = min(end_ts, market_close)
+            if window_end > window_start:
+                total_minutes += int((window_end - window_start).total_seconds() // 60)
+        day += pd.Timedelta(days=1)
+    return total_minutes
+
+
 def _edge_data_quality(
     bars: pd.DataFrame,
     *,
@@ -878,15 +1029,16 @@ def _edge_data_quality(
         required_cols = [col for col in ["Open", "High", "Low", "Close", "Volume"] if col in bars.columns]
         if required_cols:
             missing_bars = int(bars[required_cols].isna().any(axis=1).sum())
-        latest_ts = pd.Timestamp(bars.index[-1])
+        latest_source_ts = attrs.get("latest_source_timestamp")
+        latest_ts = pd.Timestamp(latest_source_ts) if latest_source_ts else pd.Timestamp(bars.index[-1])
         now_ts = pd.Timestamp.now(tz=TIMEZONE) if now is None else pd.Timestamp(now)
-        if latest_ts.tzinfo is None and now_ts.tzinfo is not None:
-            latest_ts = latest_ts.tz_localize(TIMEZONE)
-        if latest_ts.tzinfo is not None and now_ts.tzinfo is None:
-            now_ts = now_ts.tz_localize(TIMEZONE)
-        stale_minutes = max(0, int((now_ts - latest_ts).total_seconds() // 60))
+        stale_minutes = _equity_market_elapsed_minutes(latest_ts, now_ts)
         if missing_bars:
             quality_score = max(0.0, 1.0 - min(missing_bars / max(len(bars), 1), 1.0))
+        stale_grace_minutes = 30 + int(attrs.get("data_delay_minutes", 0) or 0)
+        if stale_minutes > stale_grace_minutes:
+            stale_penalty = min((stale_minutes - stale_grace_minutes) / (24 * 60), 1.0)
+            quality_score = min(quality_score, max(0.0, 1.0 - stale_penalty))
 
     return {
         "quality_score": round(quality_score, 4),
@@ -922,12 +1074,14 @@ def _score_edge_for_bars(
         }
 
     es = score_empty_space(synthetic, direction, float(entry), pb.cost_basis or float(entry))
+    doctrine = score_potter_doctrine_v2(ticker, synthetic, pb, es)
     options_contract = options_selector(ticker, direction, float(entry), logger)
     features = extract_edge_features(
         ticker=ticker,
         bars=synthetic,
         potter_box=pb,
         empty_space=es,
+        doctrine_v2=doctrine,
         options_contract=options_contract,
         data_quality=_edge_data_quality(synthetic),
     )
@@ -945,13 +1099,18 @@ def _score_edge_for_bars(
         "recommendation": scoring["recommendation"],
         "scorecard": scoring["scorecard"],
         "analog_summary": scoring["analog_summary"],
+        "blocking_reasons": scoring.get("blocking_reasons", []),
+        "rejection_reasons": scoring.get("rejection_reasons", []),
         "analog_count": len(analogs),
         "top_analogs": analogs[:5],
         "features": features,
+        "doctrine_v2": doctrine,
         "potter_passed": bool(pb.passed),
         "empty_space_passed": bool(es.passed),
         "research_score": research.get("score", 0),
-        "skip_reason": None if scoring["recommendation"] != "reject" else "edge score below promotion/research threshold",
+        "skip_reason": None
+        if scoring["recommendation"] != "reject"
+        else ", ".join(scoring.get("rejection_reasons", [])) or "edge score below promotion/research threshold",
     }
 
 
@@ -964,6 +1123,17 @@ def _build_edge_diagnostic_payload(
 
     candidates = (scan_report or {}).get("candidates", [])
     recommendations = Counter(row.get("recommendation", row.get("status", "unknown")) for row in candidates)
+    rejection_reasons = Counter(
+        str(reason)
+        for row in candidates
+        if row.get("recommendation") == "reject"
+        for reason in row.get("rejection_reasons", [])
+    )
+    blocking_reasons = Counter(
+        str(reason)
+        for row in candidates
+        for reason in row.get("blocking_reasons", [])
+    )
     scores = [float(row.get("edge_score", 0.0)) for row in candidates if row.get("edge_score") is not None]
     return {
         "mode": "diagnose_edge",
@@ -971,6 +1141,8 @@ def _build_edge_diagnostic_payload(
         "validation_samples": int((validation_report or {}).get("samples", 0)),
         "candidate_count": len(candidates),
         "recommendation_counts": dict(recommendations),
+        "rejection_reason_counts": dict(rejection_reasons.most_common()),
+        "blocking_reason_counts": dict(blocking_reasons.most_common()),
         "max_edge_score": max(scores) if scores else 0.0,
         "avg_edge_score": sum(scores) / len(scores) if scores else 0.0,
         "index_available": bool(index_records),
@@ -1295,7 +1467,19 @@ def run_watchlist_scan(watchlist: list[str], mode: str, env: dict, logger) -> di
     return summary
 
 
-def _research_next_actions(audit: dict, autotune: dict) -> list[str]:
+def run_adaptive_policy(logger, apply_tuning: bool = False) -> dict:
+    report = build_adaptive_policy_report(load_decisions())
+    apply_result = apply_adaptive_overrides(report, logger) if apply_tuning else {"status": "not_requested"}
+    payload = {**report, "apply_result": apply_result}
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORT_DIR / "adaptive_policy_report.json"
+    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("ADAPTIVE_POLICY_REPORT: %s", json.dumps(payload))
+    logger.info("Adaptive policy report saved: %s", str(report_path.resolve()))
+    return payload
+
+
+def _research_next_actions(audit: dict, autotune: dict, adaptive_policy: dict | None = None) -> list[str]:
     actions = []
     if audit.get("readiness") != "paper_trade_only":
         actions.append("keep_live_disabled")
@@ -1306,6 +1490,12 @@ def _research_next_actions(audit: dict, autotune: dict) -> list[str]:
         actions.append("collect_better_options_truth_data")
     if autotune.get("status") == "hold_no_edge":
         actions.append("do_not_loosen_thresholds")
+    if adaptive_policy:
+        recommendation = adaptive_policy.get("recommendation", {})
+        if recommendation.get("status") == "tighten_research_threshold":
+            actions.append("tighten_loss_heavy_research_threshold")
+        if recommendation.get("status") == "improve_research_threshold":
+            actions.append("use_supported_research_score_threshold")
     return actions
 
 
@@ -1337,6 +1527,7 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
         return review_summary
 
     review_summary = timed("outcome_review", review_outcomes)
+    adaptive_policy = timed("adaptive_policy", lambda: run_adaptive_policy(logger, apply_tuning=True))
     research_summary = timed("research_scan", lambda: run_watchlist_scan(watchlist, "research_scan", env, logger))
     diagnostic = timed("diagnostic", lambda: _write_zero_result_diagnostic(logger))
     autotune = timed("autotune", lambda: propose_overrides(load_decisions()))
@@ -1355,9 +1546,10 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
         "research_scan": research_summary,
         "diagnostic": diagnostic,
         "autotune": autotune,
+        "adaptive_policy": adaptive_policy,
         "edge_run_id": edge_lab.get("run_id"),
         "edge_readiness": audit,
-        "next_actions": _research_next_actions(audit, autotune),
+        "next_actions": _research_next_actions(audit, autotune, adaptive_policy),
     }
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORT_DIR / "research_ops_report.json"
@@ -1439,6 +1631,9 @@ def main() -> int:
         if args.apply_tuning:
             applied = apply_overrides(proposal, logger)
             logger.info("AUTOTUNE_APPLY_RESULT: %s", json.dumps(applied))
+        return 0
+    if args.mode == "adaptive_policy":
+        run_adaptive_policy(logger, apply_tuning=args.apply_tuning)
         return 0
     if args.mode == "replay_eval":
         if not args.replay_dataset:

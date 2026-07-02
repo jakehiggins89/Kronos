@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2
 
 
 def _as_dict(obj: Any) -> dict:
@@ -87,6 +87,7 @@ def extract_edge_features(
     bars: pd.DataFrame,
     potter_box: Any,
     empty_space: Any = None,
+    doctrine_v2: Any = None,
     event_risk: Any = None,
     options_contract: Any = None,
     kronos: Any = None,
@@ -95,11 +96,15 @@ def extract_edge_features(
     """Return a stable, JSON-safe feature vector for ranking and retrieval."""
     pb = _as_dict(potter_box)
     es = _as_dict(empty_space)
+    doctrine = _as_dict(doctrine_v2)
     ev = _as_dict(event_risk)
     opt = _as_dict(options_contract)
     kr = _as_dict(kronos)
     dq = data_quality or {}
     diagnostics = pb.get("diagnostics") or {}
+    doctrine_risk_flags = doctrine.get("risk_flags") if isinstance(doctrine.get("risk_flags"), list) else []
+    punchback_state = str(doctrine.get("punchback_state") or "unknown")
+    cost_basis_state = str(doctrine.get("cost_basis_state") or "unknown")
 
     latest_close = _finite_float(pb.get("breakout_close"))
     if latest_close == 0.0 and bars is not None and not bars.empty and "Close" in bars.columns:
@@ -162,6 +167,15 @@ def extract_edge_features(
         "rr_ratio": _finite_float(es.get("rr_ratio")),
         "distance_to_target_pct": _finite_float(es.get("distance_to_target_pct")),
         "risk_pct": _finite_float(es.get("risk_pct")),
+        "doctrine_v2_passed": _flag(doctrine.get("passed")),
+        "doctrine_v2_score": _finite_float(doctrine.get("score")),
+        "doctrine_v2_box_stack_score": _finite_float(doctrine.get("box_stack_score")),
+        "doctrine_v2_punchback_reclaim": _flag(punchback_state == "reclaim"),
+        "doctrine_v2_failed_reentry": _flag(
+            punchback_state == "failed_reentry" or "failed_reentry" in doctrine_risk_flags
+        ),
+        "punchback_state": punchback_state,
+        "cost_basis_state": cost_basis_state,
         "options_spread_pct": _finite_float(opt.get("spread_pct"), 1.0 if opt else 0.0),
         "options_open_interest": _finite_float(opt.get("open_interest")),
         "options_volume": _finite_float(opt.get("volume")),

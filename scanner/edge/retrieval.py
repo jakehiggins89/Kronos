@@ -12,6 +12,7 @@ import pandas as pd
 from ..edge.features import extract_edge_features
 from ..strategy.empty_space import score_empty_space
 from ..strategy.potter_box import detect_potter_box, score_potter_research_candidate
+from ..strategy.potter_doctrine import score_potter_doctrine_v2
 
 
 @dataclass
@@ -141,7 +142,8 @@ def build_edge_records_from_bars(
         if entry <= 0:
             continue
         es = score_empty_space(window, direction, entry, pb.cost_basis or entry)
-        features = extract_edge_features(ticker, window, pb, es)
+        doctrine = score_potter_doctrine_v2(ticker, window, pb, es)
+        features = extract_edge_features(ticker, window, pb, es, doctrine_v2=doctrine)
         features["direction"] = direction
         features["research_score"] = _finite_float(research.get("score"))
         features["research_passed"] = 1.0 if research.get("passed") else 0.0

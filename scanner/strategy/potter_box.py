@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from .. import config as scanner_config
 from ..config import (
     ATR_COMPRESSION,
     ATR_PERIOD,
@@ -12,7 +13,6 @@ from ..config import (
     MIN_BOX_TOP_TOUCHES,
     NO_TREND_SLOPE_ABS_MAX,
     RANGE_COMPRESSION,
-    RESEARCH_CANDIDATE_MIN_SCORE,
     RESEARCH_MIN_VOLUME_EXPANSION,
     RESEARCH_NEAR_BREAKOUT_PCT,
     USE_CLOSE_BASED_CONTROL,
@@ -277,7 +277,8 @@ def score_potter_research_candidate(pb: PotterBoxResult, synthetic_bars: pd.Data
         score += 5
         reasons.append("strong_close_location")
 
-    passed = score >= RESEARCH_CANDIDATE_MIN_SCORE
+    min_score = int(scanner_config.RESEARCH_CANDIDATE_MIN_SCORE)
+    passed = score >= min_score
     return {
         "passed": passed,
         "score": int(score),
@@ -288,5 +289,5 @@ def score_potter_research_candidate(pb: PotterBoxResult, synthetic_bars: pd.Data
         "breakout_state": breakout_state,
         "distance_to_breakout_pct": distance_to_breakout_pct,
         "volume_expansion": volume_expansion,
-        "min_score": RESEARCH_CANDIDATE_MIN_SCORE,
+        "min_score": min_score,
     }

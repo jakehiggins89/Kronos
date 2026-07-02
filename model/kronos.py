@@ -537,7 +537,17 @@ class KronosPredictor:
         self.tokenizer = self.tokenizer.to(self.device)
         self.model = self.model.to(self.device)
 
+    @staticmethod
+    def _reset_rotary_caches(module):
+        for child in module.modules():
+            if all(hasattr(child, attr) for attr in ("seq_len_cached", "cos_cached", "sin_cached")):
+                child.seq_len_cached = None
+                child.cos_cached = None
+                child.sin_cached = None
+
     def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose):
+        self._reset_rotary_caches(self.tokenizer)
+        self._reset_rotary_caches(self.model)
 
         x_tensor = torch.from_numpy(np.array(x).astype(np.float32)).to(self.device)
         x_stamp_tensor = torch.from_numpy(np.array(x_stamp).astype(np.float32)).to(self.device)

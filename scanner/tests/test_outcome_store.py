@@ -30,6 +30,30 @@ def test_append_decision_skips_duplicate_setup_on_same_day(monkeypatch, tmp_path
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_append_decision_enriches_duplicate_without_adding_sample(monkeypatch, tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(outcome_store, "DECISIONS_PATH", path)
+    monkeypatch.setattr(outcome_store, "REPORT_DIR", tmp_path)
+
+    first = outcome_store.append_decision(_record(research_score=68))
+    second = outcome_store.append_decision(
+        _record(
+            decision_ts="2026-06-06T15:00:00-04:00",
+            research_score=68,
+            doctrine_v2_score=74,
+            doctrine_v2_punchback_state="reclaim",
+            doctrine_v2_diagnostics={"score": 74, "punchback_state": "reclaim"},
+        )
+    )
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    assert first is True
+    assert second is False
+    assert len(rows) == 1
+    assert rows[0]["doctrine_v2_score"] == 74
+    assert rows[0]["doctrine_v2_diagnostics"]["punchback_state"] == "reclaim"
+
+
 def test_deduplicate_decisions_keeps_resolved_version():
     records = [
         _record(outcome_status="pending"),

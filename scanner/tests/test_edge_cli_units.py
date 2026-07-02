@@ -3,11 +3,14 @@ import logging
 import pandas as pd
 
 from scanner.edge.retrieval import EdgeRecord
+from scanner.data.synthetic_sessions import build_synthetic_sessions
 from scanner.utils.validation import OptionsContractResult
+from scanner.utils.validation import TickerValidationResult
 from scanner.main import (
     _build_edge_diagnostic_payload,
     _data_provenance,
     _edge_data_quality,
+    _run_single_ticker,
     _score_edge_for_bars,
     run_watchlist_scan,
 )
@@ -89,8 +92,20 @@ def test_score_edge_for_bars_includes_option_liquidity(monkeypatch):
     assert result["features"]["options_spread_pct"] == 0.09
 
 
+def test_score_edge_for_bars_includes_doctrine_v2_payload(monkeypatch):
+    monkeypatch.setattr("scanner.main.select_options_contract", _valid_options_contract)
+
+    result = _score_edge_for_bars("TEST", _bars(), _analog_records(), logging.getLogger("test"))
+
+    assert result["status"] == "candidate"
+    assert "doctrine_v2_score" in result["features"]
+    assert result["doctrine_v2"]["score"] >= 0
+    assert "doctrine_v2" in result["scorecard"]
+
+
 def test_edge_data_quality_uses_provider_and_staleness_metadata():
     bars = _bars()
+    bars.index = pd.date_range("2026-01-02 10:00", periods=len(bars), freq="1min", tz="America/New_York")
     now = bars.index[-1] + pd.Timedelta(minutes=90)
 
     sip_quality = _edge_data_quality(
@@ -120,6 +135,88 @@ def test_edge_data_quality_uses_provider_and_staleness_metadata():
     assert yfinance_quality["feed_confidence"] == 0.5
     assert sip_quality["stale_minutes"] == 90
     assert sip_quality["missing_bars"] == 0
+    assert sip_quality["quality_score"] < 1.0
+
+
+def test_edge_data_quality_keeps_fresh_complete_bars_pristine():
+    bars = _bars()
+    now = bars.index[-1]
+
+    quality = _edge_data_quality(
+        bars,
+        provider="alpaca",
+        alpaca_feed="sip",
+        alpaca_credentials_available=True,
+        now=now,
+    )
+
+    assert quality["stale_minutes"] == 0
+    assert quality["missing_bars"] == 0
+    assert quality["quality_score"] == 1.0
+
+
+def test_edge_data_quality_prefers_synthetic_source_timestamp():
+    idx = pd.date_range("2026-01-02 09:30", periods=4, freq="30min", tz="America/New_York")
+    intraday = pd.DataFrame(
+        [
+            [100.0, 101.0, 99.0, 100.5, 1000],
+            [100.5, 101.5, 100.0, 101.0, 1100],
+            [101.0, 102.0, 100.5, 101.5, 1200],
+            [101.5, 102.5, 101.0, 102.0, 1300],
+        ],
+        index=idx,
+        columns=["Open", "High", "Low", "Close", "Volume"],
+    )
+
+    synthetic, _ = build_synthetic_sessions(
+        intraday,
+        session_anchor_hour=20,
+        session_anchor_minute=0,
+        source_interval="30m",
+        prepost_enabled=True,
+    )
+    quality = _edge_data_quality(
+        synthetic,
+        provider="alpaca",
+        alpaca_feed="sip",
+        alpaca_credentials_available=True,
+        now=idx[-1] + pd.Timedelta(minutes=5),
+    )
+
+    assert synthetic.index[-1] < idx[-1]
+    assert quality["stale_minutes"] == 5
+    assert quality["quality_score"] == 1.0
+
+
+def test_edge_data_quality_does_not_penalize_market_closed_weekend_gap():
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-06-26 15:30", tz="America/New_York")])
+    bars = pd.DataFrame(
+        [[100.0, 101.0, 99.0, 100.5, 1000]],
+        index=idx,
+        columns=["Open", "High", "Low", "Close", "Volume"],
+    )
+
+    quality = _edge_data_quality(
+        bars,
+        provider="alpaca",
+        alpaca_feed="iex",
+        alpaca_credentials_available=True,
+        now=pd.Timestamp("2026-06-28 18:00", tz="America/New_York"),
+    )
+
+    assert quality["stale_minutes"] == 30
+    assert quality["quality_score"] == 1.0
+
+    reopened_quality = _edge_data_quality(
+        bars,
+        provider="alpaca",
+        alpaca_feed="iex",
+        alpaca_credentials_available=True,
+        now=pd.Timestamp("2026-06-29 10:30", tz="America/New_York"),
+    )
+
+    assert reopened_quality["stale_minutes"] == 90
+    assert reopened_quality["quality_score"] < 1.0
 
 
 def test_data_provenance_reads_bar_metadata():
@@ -145,6 +242,58 @@ def test_build_edge_diagnostic_payload_summarizes_state():
     assert payload["index_records"] == 3
     assert payload["validation_samples"] == 10
     assert payload["recommendation_counts"]["promote"] == 1
+
+
+def test_build_edge_diagnostic_payload_counts_rejection_reasons():
+    payload = _build_edge_diagnostic_payload(
+        index_records=_analog_records(),
+        validation_report={"samples": 10, "thresholds": {"55": {"precision": 0.0}}},
+        scan_report={
+            "candidates": [
+                {
+                    "ticker": "AAA",
+                    "recommendation": "reject",
+                    "rejection_reasons": ["setup_gate_failed", "options_data_not_execution_grade"],
+                    "blocking_reasons": ["setup_gate_failed", "options_data_not_execution_grade"],
+                },
+                {
+                    "ticker": "BBB",
+                    "recommendation": "reject",
+                    "rejection_reasons": ["setup_gate_failed"],
+                    "blocking_reasons": ["setup_gate_failed"],
+                },
+            ]
+        },
+    )
+
+    assert payload["rejection_reason_counts"] == {
+        "setup_gate_failed": 2,
+        "options_data_not_execution_grade": 1,
+    }
+    assert payload["blocking_reason_counts"]["setup_gate_failed"] == 2
+
+
+def test_research_scan_decision_records_doctrine_v2(monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(
+        "scanner.main.validate_ticker",
+        lambda ticker, logger: TickerValidationResult(ticker, True, 100.0, True, True),
+    )
+    monkeypatch.setattr("scanner.main._resolve_calibrated_anchor", lambda ticker: (10, 0))
+    monkeypatch.setattr("scanner.main.fetch_intraday_bars", lambda ticker, research=False: _bars())
+    monkeypatch.setattr(
+        "scanner.main.build_synthetic_sessions",
+        lambda intraday_df, **kwargs: (intraday_df, {"source_interval": "test"}),
+    )
+    monkeypatch.setattr("scanner.main.append_decision", lambda record: captured.append(record))
+
+    result = _run_single_ticker("TEST", "research_scan", {}, None, None, logging.getLogger("test"))
+
+    assert result["ticker"] == "TEST"
+    assert captured
+    assert "doctrine_v2_score" in captured[0]
+    assert "doctrine_v2_diagnostics" in captured[0]
 
 
 def test_watchlist_scan_reports_runtime_metadata(monkeypatch):

@@ -1,3 +1,4 @@
+from scanner import config
 from scanner.edge.scoring import score_edge_candidate
 
 
@@ -81,6 +82,32 @@ def test_score_edge_candidate_rejects_when_core_setup_gates_fail():
     assert result["scorecard"]["setup_gate"] < 0
 
 
+def test_score_edge_candidate_explains_reject_reasons():
+    features = _features()
+    features["potter_passed"] = 0.0
+    features["empty_space_passed"] = 0.0
+    features["empty_space_score"] = 0.0
+    features["options_data_quality"] = 0.45
+    features["options_spread_pct"] = 0.22
+    analogs = [
+        {"outcome_label": "loss", "outcome_return_pct": -3.0, "r_multiple": -1.2, "mae_pct": -4.0, "mfe_pct": 0.5},
+        {"outcome_label": "loss", "outcome_return_pct": -1.0, "r_multiple": -0.6, "mae_pct": -2.0, "mfe_pct": 0.7},
+        {"outcome_label": "win", "outcome_return_pct": 0.3, "r_multiple": 0.1, "mae_pct": -1.5, "mfe_pct": 1.0},
+    ]
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["recommendation"] == "reject"
+    assert result["blocking_reasons"] == [
+        "setup_gate_failed",
+        "non_positive_analog_expectancy",
+        "wide_options_spread",
+        "options_data_not_execution_grade",
+        "edge_score_below_research_threshold",
+    ]
+    assert result["rejection_reasons"] == result["blocking_reasons"]
+
+
 def test_score_edge_candidate_does_not_promote_indicative_options():
     features = _features()
     features["options_data_quality"] = 0.6
@@ -93,3 +120,40 @@ def test_score_edge_candidate_does_not_promote_indicative_options():
     result = score_edge_candidate(features, analogs, min_analogs=3)
 
     assert result["recommendation"] != "promote"
+
+
+def test_score_edge_candidate_uses_doctrine_v2_without_bypassing_quality_gates():
+    features = _features()
+    features["doctrine_v2_score"] = 86.0
+    features["doctrine_v2_passed"] = 1.0
+    features["doctrine_v2_failed_reentry"] = 0.0
+    features["options_data_quality"] = 0.6
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+    ]
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["scorecard"]["doctrine_v2"] > 0
+    assert result["recommendation"] != "promote"
+
+
+def test_score_edge_candidate_uses_current_doctrine_v2_baseline(monkeypatch):
+    features = _features()
+    features["doctrine_v2_score"] = 86.0
+    features["doctrine_v2_passed"] = 1.0
+    features["doctrine_v2_failed_reentry"] = 0.0
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+    ]
+
+    baseline_score = score_edge_candidate(features, analogs, min_analogs=3)["scorecard"]["doctrine_v2"]
+    monkeypatch.setattr(config, "DOCTRINE_V2_SCORE_BASELINE", 90)
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["scorecard"]["doctrine_v2"] < baseline_score
