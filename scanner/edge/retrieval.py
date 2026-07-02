@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from ..edge.features import extract_edge_features
-from ..edge.outcomes import resolve_trade_risk_pct, walk_triple_barrier
+from ..edge.outcomes import resolve_plan_target_pct, resolve_trade_risk_pct, walk_triple_barrier
 from ..strategy.empty_space import score_empty_space
 from ..strategy.potter_box import detect_potter_box, score_potter_research_candidate
 from ..strategy.potter_doctrine import score_potter_doctrine_v2
@@ -31,6 +31,8 @@ class EdgeRecord:
     exit_reason: str = "horizon"
     risk_pct_used: float = 0.0
     outcome_method: str = "close_horizon"
+    target_pct_used: float = 0.0
+    target_mode: str = "nearest_empty_space"
 
 
 # Setup-shape features only: scale-free, present in both historical and live
@@ -139,6 +141,7 @@ def _future_outcome(
     risk_pct: float,
     target_pct: float = 0.0,
     atr_value: float = 0.0,
+    next_target_pct: float = 0.0,
 ) -> dict[str, Any]:
     """Triple-barrier outcome for one historical candidate.
 
@@ -156,9 +159,21 @@ def _future_outcome(
             "exit_reason": "no_data",
             "risk_pct_used": 0.0,
             "method": "triple_barrier",
+            "target_pct_used": 0.0,
+            "target_mode": "no_data",
         }
     risk = resolve_trade_risk_pct(risk_pct, atr_value, entry)
-    return walk_triple_barrier(future, direction, entry, risk, _finite_float(target_pct))
+    plan = resolve_plan_target_pct(
+        _finite_float(target_pct),
+        _finite_float(next_target_pct),
+        _finite_float(atr_value),
+        entry,
+        risk,
+    )
+    outcome = walk_triple_barrier(future, direction, entry, risk, plan["target_pct"])
+    outcome["target_pct_used"] = plan["target_pct"]
+    outcome["target_mode"] = plan["target_mode"]
+    return outcome
 
 
 def build_edge_records_from_bars(
@@ -200,6 +215,7 @@ def build_edge_records_from_bars(
             risk_pct=_finite_float(features.get("risk_pct")),
             target_pct=_finite_float(features.get("distance_to_target_pct")),
             atr_value=_finite_float(features.get("atr_value")),
+            next_target_pct=_finite_float(es.diagnostics.get("distance_to_next_target_pct")),
         )
         records.append(
             EdgeRecord(
@@ -215,6 +231,8 @@ def build_edge_records_from_bars(
                 exit_reason=outcome["exit_reason"],
                 risk_pct_used=outcome["risk_pct_used"],
                 outcome_method=outcome["method"],
+                target_pct_used=outcome["target_pct_used"],
+                target_mode=outcome["target_mode"],
             )
         )
     return records

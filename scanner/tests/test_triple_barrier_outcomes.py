@@ -3,8 +3,20 @@ import logging
 import pandas as pd
 import pytest
 
+from scanner import config as scanner_config
+from scanner.edge.outcomes import resolve_plan_target_pct
 from scanner.edge.retrieval import _future_outcome, resolve_trade_risk_pct
 from scanner.learning import outcome_reviewer
+
+
+@pytest.fixture(autouse=True)
+def _pin_baseline_geometry(monkeypatch):
+    # These tests exercise barrier mechanics; pin the plan geometry so a
+    # change to the shipped exit-geometry default cannot silently reshape
+    # their expected targets.
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_MODE", "nearest_empty_space")
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_R_FLOOR", 0.0)
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_ATR_MULT", 2.0)
 
 
 def _bars(rows):
@@ -149,6 +161,94 @@ def test_risk_fallback_uses_atr_then_default():
     assert resolve_trade_risk_pct(3.0, atr_value=1.5, entry=100.0) == 3.0
     # Clamped so a near-zero denominator can't manufacture huge R values.
     assert resolve_trade_risk_pct(0.06, atr_value=0.0, entry=100.0) == 0.25
+
+
+def test_plan_target_baseline_passes_nearest_through():
+    plan = resolve_plan_target_pct(3.0, 6.0, 1.0, 100.0, 2.0, mode="nearest_empty_space", r_floor=0.0)
+    assert plan == {"target_pct": 3.0, "target_mode": "nearest_empty_space"}
+
+
+def test_plan_target_baseline_degenerate_falls_back_to_2r():
+    plan = resolve_plan_target_pct(0.0, 0.0, 0.0, 100.0, 2.0, mode="nearest_empty_space", r_floor=0.0)
+    assert plan["target_pct"] == 4.0
+    assert plan["target_mode"] == "nearest_empty_space:fallback_2r"
+
+
+def test_plan_target_r_floor_lifts_too_close_targets():
+    plan = resolve_plan_target_pct(1.0, 0.0, 0.0, 100.0, 2.0, mode="nearest_empty_space", r_floor=1.5)
+    assert plan["target_pct"] == 3.0  # 1.5 x 2% resolved risk
+    assert plan["target_mode"] == "nearest_empty_space+floor1.5"
+
+
+def test_plan_target_r_floor_keeps_structural_targets_beyond_it():
+    plan = resolve_plan_target_pct(5.0, 0.0, 0.0, 100.0, 2.0, mode="nearest_empty_space", r_floor=1.5)
+    assert plan == {"target_pct": 5.0, "target_mode": "nearest_empty_space"}
+
+
+def test_plan_target_next_level_prefers_next_then_falls_back():
+    plan = resolve_plan_target_pct(2.0, 6.0, 0.0, 100.0, 2.0, mode="next_empty_space", r_floor=0.0)
+    assert plan == {"target_pct": 6.0, "target_mode": "next_empty_space"}
+    fallback = resolve_plan_target_pct(2.0, 0.0, 0.0, 100.0, 2.0, mode="next_empty_space", r_floor=0.0)
+    assert fallback["target_pct"] == 2.0
+    assert fallback["target_mode"] == "next_empty_space:fallback_nearest"
+    degenerate = resolve_plan_target_pct(0.0, 0.0, 0.0, 100.0, 2.0, mode="next_empty_space", r_floor=0.0)
+    assert degenerate["target_pct"] == 4.0
+    assert degenerate["target_mode"] == "next_empty_space:fallback_2r"
+
+
+def test_plan_target_atr_multiple_and_fallback():
+    plan = resolve_plan_target_pct(1.0, 0.0, 3.0, 100.0, 2.0, mode="atr_multiple", r_floor=0.0, atr_mult=2.0)
+    assert plan["target_pct"] == 6.0  # 2 x 3% ATR
+    assert plan["target_mode"] == "atr_multiple"
+    fallback = resolve_plan_target_pct(1.0, 0.0, 0.0, 100.0, 2.0, mode="atr_multiple", r_floor=0.0, atr_mult=2.0)
+    assert fallback["target_pct"] == 4.0
+    assert fallback["target_mode"] == "atr_multiple:fallback_2r"
+
+
+def test_plan_target_reads_config_defaults(monkeypatch):
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_MODE", "nearest_empty_space")
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_R_FLOOR", 2.0)
+    plan = resolve_plan_target_pct(1.0, 0.0, 0.0, 100.0, 2.0)
+    assert plan["target_pct"] == 4.0
+    assert plan["target_mode"] == "nearest_empty_space+floor2"
+
+
+def test_future_outcome_stamps_target_geometry():
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 102, 99.5, 101, 1000],
+            [101, 104.5, 100.5, 104, 1000],
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+    assert outcome["target_pct_used"] == 4.0
+    assert outcome["target_mode"] == "nearest_empty_space"
+
+
+def test_future_outcome_r_floor_changes_exit(monkeypatch):
+    # Nearest level 1% away would exit at bar 1; a 2R floor (4%) holds the
+    # trade until the 104 target prints at bar 2.
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_R_FLOOR", 2.0)
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 102, 99.5, 101, 1000],
+            [101, 104.5, 100.5, 104, 1000],
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+            [104, 105, 103, 104.5, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=1.0)
+    assert outcome["target_pct_used"] == 4.0
+    assert outcome["target_mode"] == "nearest_empty_space+floor2"
+    assert outcome["exit_reason"] == "target"
+    assert outcome["return_pct"] == 4.0
+    assert outcome["r_multiple"] == 2.0
 
 
 def _synthetic_sessions():

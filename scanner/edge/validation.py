@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .. import config as scanner_config
 from .stats import spearman_rank_ic, t_statistic, wilson_lower_bound
 
 
@@ -116,5 +117,13 @@ def compute_edge_validation_report(
         "concentration": {
             "distinct_days": len(day_counts),
             "max_share_single_day": round(max_day_share, 4),
+        },
+        # Config at validation time; per-record ground truth is the index's
+        # target_mode field (they agree whenever the lab rebuilt the index in
+        # the same process, which run_edge_lab always does).
+        "exit_geometry_config": {
+            "target_mode": str(scanner_config.EDGE_EXIT_TARGET_MODE),
+            "target_r_floor": _finite_float(scanner_config.EDGE_EXIT_TARGET_R_FLOOR),
+            "target_atr_mult": _finite_float(scanner_config.EDGE_EXIT_TARGET_ATR_MULT),
         },
     }

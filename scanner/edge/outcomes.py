@@ -12,6 +12,8 @@ from typing import Any
 
 import pandas as pd
 
+from .. import config as scanner_config
+
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -32,6 +34,62 @@ def resolve_trade_risk_pct(risk_pct: float, atr_value: float, entry: float) -> f
         atr_pct = (_finite_float(atr_value) / entry) * 100.0 if entry > 0 else 0.0
         risk = atr_pct if atr_pct > 0.05 else 2.0
     return float(min(max(risk, 0.25), 15.0))
+
+
+def resolve_plan_target_pct(
+    nearest_target_pct: float,
+    next_target_pct: float,
+    atr_value: float,
+    entry: float,
+    risk_pct: float,
+    *,
+    mode: str | None = None,
+    r_floor: float | None = None,
+    atr_mult: float | None = None,
+) -> dict[str, Any]:
+    """Target distance (%) for the encoded trade plan, per exit-geometry config.
+
+    `risk_pct` must already be resolved (post `resolve_trade_risk_pct`) so the
+    R-floor is measured against the same stop the barrier walk uses. Every
+    branch falls back to 2x risk when its level is degenerate, matching the
+    long-standing fallback inside `walk_triple_barrier`, so the baseline mode
+    reproduces the original geometry exactly.
+    """
+    mode = mode if mode is not None else str(scanner_config.EDGE_EXIT_TARGET_MODE)
+    r_floor = float(r_floor) if r_floor is not None else _finite_float(scanner_config.EDGE_EXIT_TARGET_R_FLOOR)
+    atr_mult = float(atr_mult) if atr_mult is not None else _finite_float(scanner_config.EDGE_EXIT_TARGET_ATR_MULT)
+
+    risk = _finite_float(risk_pct)
+    nearest = _finite_float(nearest_target_pct)
+    nxt = _finite_float(next_target_pct)
+    fallback = 2.0 * risk
+
+    if mode == "next_empty_space":
+        if nxt > 0.05:
+            base, base_tag = nxt, "next_empty_space"
+        elif nearest > 0.05:
+            base, base_tag = nearest, "next_empty_space:fallback_nearest"
+        else:
+            base, base_tag = fallback, "next_empty_space:fallback_2r"
+    elif mode == "atr_multiple":
+        atr_pct = (_finite_float(atr_value) / entry) * 100.0 if entry > 0 else 0.0
+        if atr_pct > 0.05 and atr_mult > 0:
+            base, base_tag = atr_mult * atr_pct, "atr_multiple"
+        else:
+            base, base_tag = fallback, "atr_multiple:fallback_2r"
+    else:
+        # nearest_empty_space, and the fail-safe for unknown modes.
+        if nearest > 0.05:
+            base, base_tag = nearest, "nearest_empty_space"
+        else:
+            base, base_tag = fallback, "nearest_empty_space:fallback_2r"
+
+    target = base
+    tag = base_tag
+    if r_floor > 0 and risk > 0 and target < r_floor * risk:
+        target = r_floor * risk
+        tag = f"{base_tag}+floor{r_floor:g}"
+    return {"target_pct": float(target), "target_mode": tag}
 
 
 def walk_triple_barrier(
