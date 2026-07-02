@@ -13,6 +13,8 @@ from typing import Any
 
 import pandas as pd
 
+from . import config as scanner_config
+from .alerts.telegram import send_telegram_message
 from .config import REPORT_DIR
 
 # Plain-English translations for the audit's blocker/warning codes, with the
@@ -261,11 +263,70 @@ def build_daily_brief(report_dir: Path | None = None) -> tuple[str, dict]:
         "generated_at": pd.Timestamp.utcnow().isoformat(),
         "readiness": readiness,
         "next_action": _next_action(audit, policy),
+        "telegram_text": _telegram_text(today, readiness, audit, validation, policy, diagnostic, scan),
     }
     return markdown, payload
 
 
-def run_brief(logger, report_dir: Path | None = None) -> dict:
+def _telegram_text(
+    today: str,
+    readiness: str,
+    audit: dict,
+    validation: dict,
+    policy: dict,
+    diagnostic: dict,
+    scan: dict,
+) -> str:
+    """Condensed phone-sized brief. Status report only, never a trade alert."""
+    ranking = audit.get("checks", {}).get("ranking_evidence", {})
+    value = ranking.get("value", {}) if isinstance(ranking.get("value"), dict) else {}
+    blocked = list(audit.get("summary", {}).get("blocked_directions", []))
+
+    candidates = [row for row in scan.get("candidates", []) if isinstance(row, dict)]
+    actionable = [row for row in candidates if row.get("recommendation") in {"research", "promote"}]
+    scored = [row for row in candidates if row.get("edge_score") is not None]
+    best = scored[0] if scored else None
+
+    research = policy.get("research_candidates", {})
+    recommendation = policy.get("recommendation", {})
+    lift = policy.get("kronos_lift", {})
+    if _int(lift.get("rows_with_kronos")) > 0:
+        agree = lift.get("agree", {})
+        disagree = lift.get("disagree", {})
+        kronos_line = (
+            f"agree {_fmt(_num(agree.get('win_rate')) * 100, 0)}% WR (n={_int(agree.get('signal_count'))}) "
+            f"vs disagree {_fmt(_num(disagree.get('win_rate')) * 100, 0)}% WR (n={_int(disagree.get('signal_count'))})"
+        )
+    elif _int(lift.get("rows_with_eval_errors")) > 0:
+        kronos_line = f"MODEL ERRORS on {_int(lift.get('rows_with_eval_errors'))} candidates - check scanner.log"
+    else:
+        kronos_line = "accumulating (no scored candidates resolved yet)"
+
+    lines = [
+        f"KRONOS DAILY BRIEF - {today}",
+        f"Verdict: {readiness.upper()} - {_READINESS_LINE.get(readiness, 'run research_ops first')}",
+        (
+            f"Gates: rank IC {_fmt(value.get('rank_ic'), 3)}/{_fmt(value.get('min_rank_ic'), 2)}, "
+            f"top-decile n={_int(value.get('top_decile_signals'))} avgR {_fmt(value.get('top_decile_average_r'))}"
+            + (f", blocked directions: {', '.join(blocked)}" if blocked else "")
+        ),
+        (
+            f"Scan: {len(candidates)} tickers, {len(actionable)} actionable"
+            + (f"; best {best.get('ticker')} {best.get('direction', '?')} {_fmt(best.get('edge_score'), 1)}" if best else "")
+        ),
+        (
+            f"Journal: {_int(research.get('resolved'))} resolved "
+            f"({_fmt(_num(research.get('resolved_win_rate')) * 100, 0)}% WR), "
+            f"{_int(diagnostic.get('research_candidates', {}).get('pending'))} pending | "
+            f"policy: {recommendation.get('status', 'unknown')}"
+        ),
+        f"Kronos: {kronos_line}",
+        f"NEXT: {_next_action(audit, policy)}",
+    ]
+    return "\n".join(lines)
+
+
+def run_brief(logger, report_dir: Path | None = None, telegram_env: dict | None = None) -> dict:
     base = Path(report_dir) if report_dir is not None else REPORT_DIR
     markdown, payload = build_daily_brief(base)
     base.mkdir(parents=True, exist_ok=True)
@@ -275,4 +336,23 @@ def run_brief(logger, report_dir: Path | None = None) -> dict:
     print(markdown)
     if logger is not None:
         logger.info("DAILY_BRIEF_SAVED: %s", payload["path"])
+    payload["telegram"] = _deliver_telegram(payload, telegram_env, logger)
     return payload
+
+
+def _deliver_telegram(payload: dict, telegram_env: dict | None, logger) -> dict:
+    """Best-effort status delivery; never raises, never gates anything."""
+    if not scanner_config.BRIEF_TELEGRAM_ENABLED:
+        return {"status": "disabled"}
+    env = telegram_env or {}
+    token = str(env.get("telegram_token") or "").strip()
+    chat_id = str(env.get("telegram_chat_id") or "").strip()
+    if not token or not chat_id:
+        return {"status": "no_credentials"}
+    try:
+        sent = send_telegram_message(token, chat_id, payload.get("telegram_text", ""), logger)
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("BRIEF_TELEGRAM_FAILED: %s", exc)
+        return {"status": "failed", "error": str(exc)}
+    return {"status": "sent" if sent else "failed"}

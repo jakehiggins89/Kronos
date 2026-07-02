@@ -88,3 +88,5 @@ scanner/reports/*.jsonl
 scanner/reports/evidence/
 scanner/tuning/*.json
 webui/prediction_results/
+
+scanner/reports/daily_brief.md

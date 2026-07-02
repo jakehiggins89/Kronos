@@ -1,6 +1,7 @@
 ﻿"""Scanner runtime configuration (non-secret values only)."""
 
 import json
+import os
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -53,12 +54,21 @@ TIMEZONE = "America/New_York"
 KRONOS_MODEL_NAME = "NeoQuasar/Kronos-small"
 KRONOS_TOKENIZER_NAME = "NeoQuasar/Kronos-Tokenizer-base"
 KRONOS_LOOKBACK_BARS = 60
+# The research path builds synthetic sessions from a 60-calendar-day intraday
+# window (~42 trading sessions), so demanding a full 60-bar lookback made
+# Kronos unrunnable there. Use what's available down to this floor.
+KRONOS_MIN_BARS = 30
 KRONOS_SAMPLE_COUNT = 10
 # Run Kronos on research candidates (a few per day) so the journal
 # accumulates agree/disagree outcome evidence; the strict pipeline only
 # reaches Kronos after the options gate, which historically never happened,
 # so the model's lift was unmeasurable.
 KRONOS_RESEARCH_ENABLED = True
+
+# Send the condensed daily brief to Telegram when credentials are configured.
+# This is a status report, not a trade alert; live alerting stays behind the
+# evidence-gated live-mode checks.
+BRIEF_TELEGRAM_ENABLED = True
 
 MINIMAX_ENABLED_DEFAULT = False
 MINIMAX_MODEL = "MiniMax-M2.7-highspeed"
@@ -92,6 +102,18 @@ EDGE_CROSS_TICKER_EMBARGO_DAYS = 1
 EDGE_VALIDATION_MAX_RECORDS = 1500
 EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
 EDGE_VALIDATION_TOP_K = 25
+
+# Exit geometry for the lab's encoded trade plan. The stop side stays the
+# empty-space risk (ATR/2% fallback); these choose the TARGET. The first lab
+# run showed the nearest empty-space level sits too close to the stop (66%
+# target-hit rate, negative expectancy), so alternatives are swept through
+# run_edge_lab. Env overrides let a sweep flip variants per process without
+# code edits; the committed defaults are the shipped geometry. These are NOT
+# adaptive-policy tunables - the outcome definition must not drift under the
+# feedback loop that is judged against it.
+EDGE_EXIT_TARGET_MODE = os.getenv("KRONOS_EXIT_TARGET_MODE", "nearest_empty_space")
+EDGE_EXIT_TARGET_R_FLOOR = float(os.getenv("KRONOS_EXIT_TARGET_R_FLOOR", "0.0"))
+EDGE_EXIT_TARGET_ATR_MULT = float(os.getenv("KRONOS_EXIT_TARGET_ATR_MULT", "2.0"))
 
 # Two-sided adaptive policy guards. Loosening only touches the research
 # threshold (a data-collection throttle for paper counterfactuals, not a live

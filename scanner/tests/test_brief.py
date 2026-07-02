@@ -130,3 +130,63 @@ def test_run_brief_writes_markdown_file(tmp_path, capsys):
     assert payload["path"] == str(output.resolve())
     assert "## Verdict" in output.read_text(encoding="utf-8")
     assert "Kronos Daily Brief" in capsys.readouterr().out
+    assert payload["telegram"]["status"] == "no_credentials"
+
+
+def test_run_brief_sends_condensed_telegram_when_configured(tmp_path, monkeypatch):
+    _write_reports(tmp_path)
+    sent = {}
+
+    def fake_send(token, chat_id, message, logger):
+        sent.update({"token": token, "chat_id": chat_id, "message": message})
+        return True
+
+    monkeypatch.setattr("scanner.brief.send_telegram_message", fake_send)
+
+    payload = run_brief(
+        logging.getLogger("test"),
+        report_dir=tmp_path,
+        telegram_env={"telegram_token": "tok", "telegram_chat_id": "42"},
+    )
+
+    assert payload["telegram"]["status"] == "sent"
+    assert sent["chat_id"] == "42"
+    assert "KRONOS DAILY BRIEF" in sent["message"]
+    assert "Verdict: BLOCKED" in sent["message"]
+    assert "NEXT:" in sent["message"]
+    assert len(sent["message"]) < 1500
+
+
+def test_run_brief_telegram_failure_never_raises(tmp_path, monkeypatch):
+    _write_reports(tmp_path)
+
+    def boom(token, chat_id, message, logger):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr("scanner.brief.send_telegram_message", boom)
+
+    payload = run_brief(
+        logging.getLogger("test"),
+        report_dir=tmp_path,
+        telegram_env={"telegram_token": "tok", "telegram_chat_id": "42"},
+    )
+
+    assert payload["telegram"]["status"] == "failed"
+
+
+def test_run_brief_telegram_respects_disable_flag(tmp_path, monkeypatch):
+    _write_reports(tmp_path)
+    monkeypatch.setattr("scanner.brief.scanner_config.BRIEF_TELEGRAM_ENABLED", False)
+
+    def fail_send(*args, **kwargs):
+        raise AssertionError("must not send when disabled")
+
+    monkeypatch.setattr("scanner.brief.send_telegram_message", fail_send)
+
+    payload = run_brief(
+        logging.getLogger("test"),
+        report_dir=tmp_path,
+        telegram_env={"telegram_token": "tok", "telegram_chat_id": "42"},
+    )
+
+    assert payload["telegram"]["status"] == "disabled"

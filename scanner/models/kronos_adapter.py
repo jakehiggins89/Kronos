@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .. import config as scanner_config
-from ..config import KRONOS_LOOKBACK_BARS, KRONOS_SAMPLE_COUNT, PRED_DAYS
+from ..config import KRONOS_LOOKBACK_BARS, KRONOS_MIN_BARS, KRONOS_SAMPLE_COUNT, PRED_DAYS
 from ..data.market_data import compute_future_timestamps
 from ..utils.validation import KronosResult
 
@@ -64,8 +64,8 @@ class KronosAdapter:
             )
 
         try:
-            if len(synthetic_bars) < KRONOS_LOOKBACK_BARS:
-                return KronosResult(False, "insufficient_context", None, None, None, 0, f"need {KRONOS_LOOKBACK_BARS} synthetic bars")
+            if len(synthetic_bars) < KRONOS_MIN_BARS:
+                return KronosResult(False, "insufficient_context", None, None, None, 0, f"need {KRONOS_MIN_BARS} synthetic bars")
 
             features = self._format_features(synthetic_bars.tail(KRONOS_LOOKBACK_BARS))
             # KronosPredictor uses the .dt accessor, so timestamps must be

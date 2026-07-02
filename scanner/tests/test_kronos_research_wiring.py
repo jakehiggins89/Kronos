@@ -165,6 +165,25 @@ def test_adapter_passes_series_timestamps_to_predictor():
     assert result.directional_agreement is not None
 
 
+def test_adapter_accepts_research_sized_windows():
+    # The research path yields ~42 synthetic sessions (60 calendar days);
+    # demanding a full 60-bar lookback made Kronos unrunnable there.
+    class FakePredictor:
+        def predict(self, df, x_timestamp, y_timestamp, pred_len, **kwargs):
+            idx = pd.date_range("2026-07-03", periods=pred_len, freq="D")
+            return pd.DataFrame({"close": [float(df["close"].iloc[-1])] * pred_len}, index=idx)
+
+    adapter = KronosAdapter(logging.getLogger("test"))
+    adapter._predictor = FakePredictor()
+
+    ok = adapter.evaluate("TEST", _adapter_bars(rows=42), "bullish")
+    assert ok.output_mode == "multi_path_agreement"
+
+    too_thin = adapter.evaluate("TEST", _adapter_bars(rows=20), "bullish")
+    assert too_thin.passed is False
+    assert too_thin.output_mode == "insufficient_context"
+
+
 def _research_record(ticker, label, ret, agreement=None):
     record = {
         "ticker": ticker,

@@ -79,6 +79,13 @@ Equivalent Python commands:
 .\venv\Scripts\python.exe -m scanner.main --mode doctor
 ```
 
+## Automation (hands-off daily loop)
+A Windows scheduled task named `Kronos Daily Research Ops` runs `scanner\run_research_ops_scheduled.bat` every weekday at 13:30 Central (14:30 ET, mid-session so Tradier quotes are execution-grade). It wakes the PC if asleep and catches up if the start was missed. Output appends to `scanner\logs\scheduled_research_ops.log`.
+
+Each run finishes by writing `scanner\reports\daily_brief.md` and sending the condensed brief to Telegram (`BRIEF_TELEGRAM_ENABLED`, uses `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` from `.env`). The Telegram message is a status report only; live trade alerting remains behind the evidence-gated live-mode checks.
+
+To inspect or change the schedule: Task Scheduler > "Kronos Daily Research Ops", or re-register via `Register-ScheduledTask` (see git history for the exact command).
+
 ## Daily Brief
 `brief` reads the latest report artifacts (no network, no model loads) and renders a verdict-first operator summary: evidence-gate progress, today's scan, learning-loop state including Kronos lift, every blocker in plain English with its fix, and the single next action. `research_ops` runs it automatically as its final stage.
 

@@ -1598,7 +1598,7 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
     diagnostic = timed("diagnostic", lambda: _write_zero_result_diagnostic(logger))
     autotune = timed("autotune", lambda: propose_overrides(load_decisions()))
     edge_lab = timed("edge_lab", lambda: run_edge_lab(watchlist, logger))
-    daily_brief = timed("daily_brief", lambda: run_brief(logger))
+    daily_brief = timed("daily_brief", lambda: run_brief(logger, telegram_env=env))
     audit = edge_lab.get("audit", {})
     completed_at = _utc_now_iso()
     payload = {
@@ -1734,7 +1734,7 @@ def main() -> int:
         run_research_ops(WATCHLIST, env, logger)
         return 0
     if args.mode == "brief":
-        run_brief(logger)
+        run_brief(logger, telegram_env=env)
         return 0
     if args.mode == "doctor":
         report = run_doctor()

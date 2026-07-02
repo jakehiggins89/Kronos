@@ -60,7 +60,7 @@ def test_research_ops_orchestrates_cycle_and_writes_report(monkeypatch, tmp_path
     monkeypatch.setattr(
         scanner_main,
         "run_brief",
-        lambda logger: {"mode": "brief", "readiness": "blocked"},
+        lambda logger, telegram_env=None: {"mode": "brief", "readiness": "blocked"},
     )
 
     report = scanner_main.run_research_ops(["TEST"], {}, scanner_main.setup_logging(tmp_path))
