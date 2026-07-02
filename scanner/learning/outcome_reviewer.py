@@ -142,6 +142,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             if barrier is not None:
                 rec["outcome_label"] = barrier["label"]
                 rec["outcome_method"] = barrier["method"]
+                rec["outcome_return_pct"] = barrier["return_pct"]
                 rec["outcome_r_multiple"] = barrier["r_multiple"]
                 rec["outcome_exit_reason"] = barrier["exit_reason"]
                 rec["outcome_risk_pct_used"] = barrier["risk_pct_used"]
@@ -150,6 +151,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             else:
                 rec["outcome_label"] = close_label
                 rec["outcome_method"] = "close_horizon"
+                rec["outcome_return_pct"] = ret5
             rec["outcome_resolved_at"] = pd.Timestamp.utcnow().isoformat()
             updated += 1
             if rec.get("counterfactual"):

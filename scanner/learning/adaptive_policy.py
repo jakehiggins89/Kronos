@@ -53,10 +53,19 @@ def _generic_threshold_grid(current_score: int, bounds: tuple[int, int]) -> list
     return sorted(score for score in candidates if int(low) <= score <= int(high))
 
 
+def _outcome_return_pct(row: dict) -> float:
+    # Barrier-based return when the reviewer recorded one; the close-at-
+    # horizon metric otherwise, so labels and returns describe the same exit.
+    value = row.get("outcome_return_pct")
+    if value is None:
+        value = row.get("outcome_ret_5bar_pct")
+    return _finite_float(value)
+
+
 def _metric_block(rows: list[dict]) -> dict:
     wins = sum(1 for row in rows if row.get("outcome_label") == "win")
     losses = sum(1 for row in rows if row.get("outcome_label") == "loss")
-    returns = [_finite_float(row.get("outcome_ret_5bar_pct")) for row in rows]
+    returns = [_outcome_return_pct(row) for row in rows]
     total = wins + losses
     return {
         "signal_count": total,

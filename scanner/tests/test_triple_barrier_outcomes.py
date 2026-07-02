@@ -207,6 +207,7 @@ def test_review_applies_triple_barrier_to_journal_outcomes(monkeypatch, tmp_path
     assert record["outcome_exit_reason"] == "target"
     assert record["outcome_risk_pct_used"] == pytest.approx(5.0)
     assert record["outcome_r_multiple"] == pytest.approx(2.0)
+    assert record["outcome_return_pct"] == pytest.approx(10.0)  # barrier exit, matches the label
     assert record["outcome_ret_5bar_pct"] == pytest.approx(25.0)  # legacy metric preserved
     assert record["outcome_mae_pct"] == pytest.approx(2.0)  # path low 10.2 vs entry, up to exit
     assert record["outcome_mfe_pct"] == pytest.approx(12.0)  # path high 11.2 vs entry, up to exit

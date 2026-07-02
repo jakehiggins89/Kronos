@@ -124,6 +124,17 @@ def test_adaptive_policy_can_tighten_doctrine_v2_baseline_from_losses():
     assert report["recommendation"]["proposed_overrides"] == {"DOCTRINE_V2_SCORE_BASELINE": 75}
 
 
+def test_metric_returns_prefer_barrier_outcome_over_close_horizon():
+    records = [
+        {**_research_record("A", 70, "loss", 3.0, 1), "outcome_return_pct": -2.0},  # stopped out, drifted green
+        _research_record("B", 70, "loss", -1.0, 2),  # legacy row, close metric only
+    ]
+
+    report = build_adaptive_policy_report(records, current_research_score=62, min_research_samples=99)
+
+    assert report["research_candidates"]["average_return_pct"] == -1.5
+
+
 def _patch_apply_env(monkeypatch, tmp_path, current_score=60):
     overrides_path = tmp_path / "overrides.json"
     monkeypatch.setattr("scanner.learning.adaptive_policy.OVERRIDES_PATH", overrides_path)
