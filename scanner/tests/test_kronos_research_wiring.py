@@ -1,10 +1,12 @@
 import logging
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 
 from scanner import main as scanner_main
 from scanner.learning.adaptive_policy import build_adaptive_policy_report
+from scanner.models.kronos_adapter import KronosAdapter
 
 
 def _fake_kronos(calls, fail=False):
@@ -97,6 +99,68 @@ def test_research_scan_respects_kronos_disable_flag(monkeypatch):
 
     assert kronos_calls == []
     assert "kronos_directional_agreement" not in captured[0]
+
+
+def test_model_failure_is_not_journaled_as_disagreement(monkeypatch):
+    # An adapter error yields passed=False with agreement None; journaling
+    # that as kronos_passed=False would poison the lift measurement.
+    captured, kronos_calls = [], []
+    _patch_research_scan(monkeypatch, captured, kronos_calls)
+    errored = SimpleNamespace(
+        evaluate=lambda ticker, bars, direction: SimpleNamespace(
+            passed=False,
+            directional_agreement=None,
+            median_forecast_return_pct=None,
+            worst_sampled_return_pct=None,
+            skip_reason="Kronos error: model exploded",
+        )
+    )
+
+    scanner_main._run_single_ticker(
+        "TEST", "research_scan", {}, errored, SimpleNamespace(), logging.getLogger("test")
+    )
+
+    record = captured[0]
+    assert "kronos_passed" not in record
+    assert "kronos_directional_agreement" not in record
+
+
+def _adapter_bars(rows=90):
+    rng = np.random.default_rng(3)
+    closes = 100 + np.cumsum(rng.normal(0, 1, rows))
+    return pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes + 0.5,
+            "Low": closes - 0.5,
+            "Close": closes,
+            "Volume": np.full(rows, 1000.0),
+        },
+        index=pd.date_range("2026-01-01", periods=rows, freq="D", tz="America/New_York"),
+    )
+
+
+def test_adapter_passes_series_timestamps_to_predictor():
+    # KronosPredictor uses the .dt accessor; a raw DatetimeIndex crashed
+    # every inference (latent until research candidates started running it).
+    captured = {}
+
+    class FakePredictor:
+        def predict(self, df, x_timestamp, y_timestamp, pred_len, **kwargs):
+            captured["x"] = x_timestamp
+            captured["y"] = y_timestamp
+            idx = pd.date_range("2026-07-03", periods=pred_len, freq="D")
+            return pd.DataFrame({"close": [float(df["close"].iloc[-1])] * pred_len}, index=idx)
+
+    adapter = KronosAdapter(logging.getLogger("test"))
+    adapter._predictor = FakePredictor()
+
+    result = adapter.evaluate("TEST", _adapter_bars(), "bullish")
+
+    assert isinstance(captured["x"], pd.Series)
+    assert isinstance(captured["y"], pd.Series)
+    assert result.output_mode == "multi_path_agreement"
+    assert result.directional_agreement is not None
 
 
 def _research_record(ticker, label, ret, agreement=None):

@@ -68,8 +68,11 @@ class KronosAdapter:
                 return KronosResult(False, "insufficient_context", None, None, None, 0, f"need {KRONOS_LOOKBACK_BARS} synthetic bars")
 
             features = self._format_features(synthetic_bars.tail(KRONOS_LOOKBACK_BARS))
-            x_timestamp = features.index
-            y_timestamp = compute_future_timestamps(x_timestamp[-1], PRED_DAYS)
+            # KronosPredictor uses the .dt accessor, so timestamps must be
+            # Series, not DatetimeIndex. This never surfaced before because
+            # the strict pipeline never reached the Kronos stage.
+            x_timestamp = pd.Series(features.index)
+            y_timestamp = pd.Series(compute_future_timestamps(features.index[-1], PRED_DAYS))
 
             paths: list[pd.DataFrame] = []
             for _ in range(KRONOS_SAMPLE_COUNT):

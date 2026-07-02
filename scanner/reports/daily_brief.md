@@ -4,19 +4,19 @@
 **blocked** -- NOT live-ready. Evidence gates are failing; live alerting stays off.
 
 ## Evidence progress
-- Ranking gate (not yet): rank IC 0.010 (need >= 0.07, p 0.352), top-decile signals 150/20, avg R -0.04, t -1.14, Wilson-LB precision 0.71 (need >= 0.45)
+- Ranking gate (not yet): rank IC 0.012 (need >= 0.07, p 0.317), top-decile signals 150/20, avg R -0.05, t -1.19, Wilson-LB precision 0.71 (need >= 0.45)
 - Legacy threshold-55 gate (not yet): 0/20 signals
-- Directions: bullish n=910 avgR -0.01 BLOCKED; bearish n=590 avgR -0.15 BLOCKED
+- Directions: bullish n=910 avgR -0.01 BLOCKED; bearish n=590 avgR -0.16 BLOCKED
 
 ## Today's scan
-- 30 tickers scanned: 17 skip, 13 reject
-- RIVN: bullish edge 24.58 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
-- CLSK: bearish edge 22.89 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
-- GME: bullish edge 19.45 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
+- 30 tickers scanned: 15 reject, 15 skip
+- RIVN: bullish edge 30.97 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
+- GME: bullish edge 28.86 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
+- CLSK: bearish edge 25.88 -- blocked by setup_gate_failed, options_data_not_execution_grade, edge_score_below_research_threshold
 
 ## Learning loop
-- Journal: 22 resolved research candidates (8W/14L, 36.4% WR), 6 pending
-- Policy: hold_current_threshold_pending_samples (threshold 72) -- current threshold needs more resolved samples before another automatic tightening
+- Journal: 22 resolved research candidates (8W/14L, 36.4% WR), 8 pending
+- Policy: loosen_research_threshold (threshold 72) -- a lower research threshold dominates the current cohort on conservative bounds
 - Kronos lift: no scored research candidates yet (accumulating from today forward)
 - Doctrine v2: 8 resolved, baseline cohort 2W/1L avg 3.92%
 
@@ -31,4 +31,4 @@
 - bullish_edge_negative: Bullish setups have negative expectancy in validation. Fix: bullish promotion stays blocked until bullish evidence turns positive.
 
 ## Next action
-Data decision: open a free Tradier brokerage account (real-time OPRA options + open interest, $0) or upgrade Alpaca to Algo Trader Plus ($99/mo). This is the only blocker code cannot fix.
+Confirm the pending research-threshold loosening on tomorrow's research_ops run so the journal starts refilling.

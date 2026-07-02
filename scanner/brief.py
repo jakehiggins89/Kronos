@@ -27,12 +27,12 @@ _ISSUE_GUIDE = {
         "keep daily research_ops running so walk-forward samples accumulate",
     ),
     "options_data_not_execution_grade": (
-        "Options quotes are indicative (free Alpaca feed), never execution-grade",
-        "open a free Tradier brokerage account (real-time OPRA + open interest) or pay for Alpaca Algo Trader Plus",
+        "Options quotes were below execution grade at scan time (stale/after-hours Tradier quotes, or the indicative fallback)",
+        "run research_ops during market hours so Tradier quotes are fresh; if this persists intraday, check TRADIER_API_TOKEN",
     ),
     "options_liquidity_missing": (
-        "Open interest / volume / spread fields are missing on some candidates",
-        "same fix as execution-grade options data",
+        "Open interest / volume / spread fields are missing or zero on some candidates",
+        "usually zero day-volume early in the session or a fallback quote; resolves on an intraday scan",
     ),
     "low_feed_confidence": (
         "Equity bars come from the free IEX-only feed",
@@ -208,8 +208,8 @@ def _next_action(audit: dict, policy: dict) -> str:
         )
     if "options_data_not_execution_grade" in warnings:
         return (
-            "Data decision: open a free Tradier brokerage account (real-time OPRA options + open interest, $0) "
-            "or upgrade Alpaca to Algo Trader Plus ($99/mo). This is the only blocker code cannot fix."
+            "Run research_ops during market hours so Tradier quotes are fresh and the scan banks "
+            "execution-grade options evidence. If the flag persists intraday, check TRADIER_API_TOKEN."
         )
     if blockers:
         return "Keep the daily research_ops cadence; evidence gates need more resolved samples."
