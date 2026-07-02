@@ -5,8 +5,16 @@ import math
 from collections import Counter
 from typing import Any
 
+import pandas as pd
+
 from .. import config as scanner_config
 from ..config import (
+    ADAPTIVE_CHANGE_COOLDOWN_DAYS,
+    ADAPTIVE_LOOSEN_LB_MARGIN,
+    ADAPTIVE_LOOSEN_MAX_STEP,
+    ADAPTIVE_LOOSEN_MIN_SAMPLES,
+    ADAPTIVE_LOOSEN_MIN_WILSON,
+    ADAPTIVE_LOOSEN_RET_MARGIN,
     DOCTRINE_V2_SCORE_BASELINE_BOUNDS,
     OVERRIDES_PATH,
     RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS,
@@ -14,6 +22,7 @@ from ..config import (
 )
 from ..edge.stats import wilson_lower_bound as _wilson_lower_bound
 from .outcome_store import deduplicate_decisions
+from .trial_registry import record_trial
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -221,6 +230,30 @@ def build_adaptive_policy_report(
         "auto_apply_safe": False,
         "proposed_overrides": {},
     }
+    # Loosening challenger: the highest grid threshold below the current one
+    # (within the max step) whose cohort dominates the current cohort on
+    # conservative bounds. Without this path a noise-driven tightening can
+    # starve the research journal forever: too few signals at the current
+    # threshold to ever re-evaluate, and no way back down.
+    loosen_candidate = None
+    current_lb = current_block["wilson_lower_win_rate"]
+    current_ret = current_block["average_return_pct"]
+    for row in sorted(threshold_candidates, key=lambda r: r["threshold"], reverse=True):
+        if row["threshold"] >= current_research_score:
+            continue
+        if row["threshold"] < max(int(RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS[0]), int(current_research_score) - ADAPTIVE_LOOSEN_MAX_STEP):
+            continue
+        dominates = (
+            row["signal_count"] >= ADAPTIVE_LOOSEN_MIN_SAMPLES
+            and row["average_return_pct"] > 0.0
+            and row["wilson_lower_win_rate"] >= ADAPTIVE_LOOSEN_MIN_WILSON
+            and row["wilson_lower_win_rate"] >= current_lb + ADAPTIVE_LOOSEN_LB_MARGIN
+            and row["average_return_pct"] >= current_ret + ADAPTIVE_LOOSEN_RET_MARGIN
+        )
+        if dominates:
+            loosen_candidate = row
+            break
+
     if len(research_rows) >= min_research_samples:
         if supported:
             selected = supported[0]
@@ -230,6 +263,14 @@ def build_adaptive_policy_report(
                 "selected_threshold": selected["threshold"],
                 "auto_apply_safe": selected["threshold"] >= current_research_score,
                 "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": int(selected["threshold"])},
+            }
+        elif loosen_candidate is not None:
+            recommendation = {
+                "status": "loosen_research_threshold",
+                "reason": "a lower research threshold dominates the current cohort on conservative bounds",
+                "selected_threshold": loosen_candidate["threshold"],
+                "auto_apply_safe": True,
+                "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": int(loosen_candidate["threshold"])},
             }
         elif current_block["signal_count"] < min_research_samples:
             recommendation = {
@@ -295,24 +336,87 @@ def build_adaptive_policy_report(
     }
 
 
-def apply_adaptive_overrides(report: dict, logger) -> dict:
+def _load_overrides_payload() -> dict:
+    if not OVERRIDES_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_overrides_payload(values: dict, meta: dict) -> dict:
+    merged = {key: value for key, value in values.items() if key != "_meta"}
+    if meta:
+        merged["_meta"] = meta
+    TUNING_DIR.mkdir(parents=True, exist_ok=True)
+    OVERRIDES_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    return merged
+
+
+def _is_loosening(overrides: dict) -> bool:
+    proposed = overrides.get("RESEARCH_CANDIDATE_MIN_SCORE")
+    if proposed is None:
+        return False
+    return int(proposed) < int(scanner_config.RESEARCH_CANDIDATE_MIN_SCORE)
+
+
+def apply_adaptive_overrides(report: dict, logger, now: Any = None) -> dict:
     recommendation = report.get("recommendation", {}) if isinstance(report, dict) else {}
     overrides = recommendation.get("proposed_overrides", {})
     if not recommendation.get("auto_apply_safe") or not overrides:
         return {"status": "no_overrides_applied"}
 
-    existing = {}
-    if OVERRIDES_PATH.exists():
-        try:
-            existing_payload = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
-            if isinstance(existing_payload, dict):
-                existing = existing_payload
-        except Exception:
-            existing = {}
-    merged = {**existing, **overrides}
-    TUNING_DIR.mkdir(parents=True, exist_ok=True)
-    OVERRIDES_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    now_ts = pd.Timestamp(now) if now is not None else pd.Timestamp.utcnow()
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.tz_localize("UTC")
+    existing = _load_overrides_payload()
+    meta = existing.get("_meta")
+    meta = dict(meta) if isinstance(meta, dict) else {}
+
+    # Loosening is applied asymmetrically: cooldown since the last automatic
+    # change, plus a second confirmation on a later calendar day, so one noisy
+    # review cannot walk the threshold down.
+    if _is_loosening(overrides):
+        last_change = meta.get("last_auto_change_at")
+        if last_change:
+            try:
+                if (now_ts - pd.Timestamp(last_change)).days < ADAPTIVE_CHANGE_COOLDOWN_DAYS:
+                    record_trial(
+                        "adaptive_policy",
+                        {"recommendation": recommendation, "applied": False, "outcome": "cooldown_active"},
+                    )
+                    return {"status": "cooldown_active", "cooldown_days": ADAPTIVE_CHANGE_COOLDOWN_DAYS}
+            except (TypeError, ValueError):
+                pass
+
+        pending = meta.get("pending_loosen")
+        pending = pending if isinstance(pending, dict) else {}
+        proposed_value = int(overrides["RESEARCH_CANDIDATE_MIN_SCORE"])
+        today = str(now_ts.date())
+        if pending.get("threshold") != proposed_value or not pending.get("first_seen_date"):
+            meta["pending_loosen"] = {"threshold": proposed_value, "first_seen_date": today}
+            _write_overrides_payload(existing, meta)
+            record_trial(
+                "adaptive_policy",
+                {"recommendation": recommendation, "applied": False, "outcome": "pending_confirmation"},
+            )
+            return {"status": "pending_confirmation", "pending_loosen": meta["pending_loosen"]}
+        if pending.get("first_seen_date") == today:
+            record_trial(
+                "adaptive_policy",
+                {"recommendation": recommendation, "applied": False, "outcome": "awaiting_next_day_confirmation"},
+            )
+            return {"status": "pending_confirmation", "pending_loosen": pending}
+        meta.pop("pending_loosen", None)
+    else:
+        meta.pop("pending_loosen", None)
+
+    meta["last_auto_change_at"] = now_ts.isoformat()
+    merged = _write_overrides_payload({**existing, **overrides}, meta)
     scanner_config.reload_overrides()
     if logger is not None:
         logger.info("ADAPTIVE_POLICY_OVERRIDES_APPLIED: %s", json.dumps(overrides))
+    record_trial("adaptive_policy", {"recommendation": recommendation, "applied": True, "outcome": "applied"})
     return {"status": "applied", "path": str(OVERRIDES_PATH), "overrides": overrides, "merged_overrides": merged}

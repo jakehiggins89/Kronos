@@ -28,6 +28,7 @@ from ..config import (
     TUNING_DIR,
 )
 from .outcome_store import deduplicate_decisions
+from .trial_registry import record_trial
 
 
 def _clamp(value, bounds):
@@ -140,7 +141,19 @@ def apply_overrides(payload: dict, logger) -> dict:
     overrides = payload.get("overrides", {})
     if not overrides:
         return {"status": "no_overrides_applied"}
+    # Merge with the existing file: a plain overwrite silently dropped keys
+    # owned by the adaptive policy (and its _meta change history).
+    existing = {}
+    if OVERRIDES_PATH.exists():
+        try:
+            existing_payload = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
+            if isinstance(existing_payload, dict):
+                existing = existing_payload
+        except Exception:
+            existing = {}
+    merged = {**existing, **overrides}
     TUNING_DIR.mkdir(parents=True, exist_ok=True)
-    OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
+    OVERRIDES_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     logger.info("AUTOTUNE_OVERRIDES_APPLIED: %s", json.dumps(overrides))
-    return {"status": "applied", "path": str(OVERRIDES_PATH), "overrides": overrides}
+    record_trial("autotune", {"overrides": overrides, "applied": True})
+    return {"status": "applied", "path": str(OVERRIDES_PATH), "overrides": overrides, "merged_overrides": merged}

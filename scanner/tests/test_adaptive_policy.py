@@ -124,11 +124,21 @@ def test_adaptive_policy_can_tighten_doctrine_v2_baseline_from_losses():
     assert report["recommendation"]["proposed_overrides"] == {"DOCTRINE_V2_SCORE_BASELINE": 75}
 
 
-def test_apply_adaptive_overrides_merges_existing_tuning(monkeypatch, tmp_path):
+def _patch_apply_env(monkeypatch, tmp_path, current_score=60):
     overrides_path = tmp_path / "overrides.json"
-    overrides_path.write_text(json.dumps({"MIN_RR": 1.7}), encoding="utf-8")
     monkeypatch.setattr("scanner.learning.adaptive_policy.OVERRIDES_PATH", overrides_path)
     monkeypatch.setattr("scanner.learning.adaptive_policy.TUNING_DIR", tmp_path)
+    monkeypatch.setattr("scanner.learning.adaptive_policy.record_trial", lambda kind, payload: None)
+    monkeypatch.setattr(
+        "scanner.learning.adaptive_policy.scanner_config.RESEARCH_CANDIDATE_MIN_SCORE",
+        current_score,
+    )
+    return overrides_path
+
+
+def test_apply_adaptive_overrides_merges_existing_tuning(monkeypatch, tmp_path):
+    overrides_path = _patch_apply_env(monkeypatch, tmp_path, current_score=60)
+    overrides_path.write_text(json.dumps({"MIN_RR": 1.7}), encoding="utf-8")
 
     result = apply_adaptive_overrides(
         {
@@ -141,17 +151,15 @@ def test_apply_adaptive_overrides_merges_existing_tuning(monkeypatch, tmp_path):
     )
 
     assert result["status"] == "applied"
-    assert json.loads(overrides_path.read_text(encoding="utf-8")) == {
-        "MIN_RR": 1.7,
-        "RESEARCH_CANDIDATE_MIN_SCORE": 67,
-    }
+    written = json.loads(overrides_path.read_text(encoding="utf-8"))
+    assert written["MIN_RR"] == 1.7
+    assert written["RESEARCH_CANDIDATE_MIN_SCORE"] == 67
+    assert "last_auto_change_at" in written["_meta"]
 
 
 def test_apply_adaptive_overrides_refreshes_runtime_config(monkeypatch, tmp_path):
-    overrides_path = tmp_path / "overrides.json"
+    _patch_apply_env(monkeypatch, tmp_path, current_score=60)
     calls = []
-    monkeypatch.setattr("scanner.learning.adaptive_policy.OVERRIDES_PATH", overrides_path)
-    monkeypatch.setattr("scanner.learning.adaptive_policy.TUNING_DIR", tmp_path)
     monkeypatch.setattr(
         "scanner.learning.adaptive_policy.scanner_config.reload_overrides",
         lambda: calls.append("reload"),
@@ -169,3 +177,108 @@ def test_apply_adaptive_overrides_refreshes_runtime_config(monkeypatch, tmp_path
 
     assert result["status"] == "applied"
     assert calls == ["reload"]
+
+
+def _loosen_deadlock_records():
+    """The observed deadlock: threshold 72 starves (n=5, loss-heavy) while 65
+    holds three times the samples with positive returns."""
+    records = []
+    day = 1
+    for i in range(18):
+        label = "win" if i < 11 else "loss"
+        ret = 1.8 if label == "win" else -1.2
+        records.append(_research_record(f"MID{i}", 66, label, ret, (day := day + 1) % 28 or 1))
+    for i in range(5):
+        label = "win" if i == 0 else "loss"
+        ret = 0.5 if label == "win" else -1.8
+        records.append(_research_record(f"TOP{i}", 73, label, ret, (day := day + 1) % 28 or 1))
+    return records
+
+
+def test_adaptive_policy_loosens_when_lower_threshold_dominates():
+    report = build_adaptive_policy_report(
+        _loosen_deadlock_records(),
+        current_research_score=72,
+        min_research_samples=8,
+    )
+
+    assert report["recommendation"]["status"] == "loosen_research_threshold"
+    assert report["recommendation"]["selected_threshold"] == 65
+    assert report["recommendation"]["auto_apply_safe"] is True
+    assert report["recommendation"]["proposed_overrides"] == {"RESEARCH_CANDIDATE_MIN_SCORE": 65}
+
+
+def test_adaptive_policy_does_not_loosen_on_thin_challenger():
+    records = _loosen_deadlock_records()[8:]  # challenger cohort now too small
+
+    report = build_adaptive_policy_report(records, current_research_score=72, min_research_samples=8)
+
+    assert report["recommendation"]["status"] != "loosen_research_threshold"
+
+
+def test_loosening_requires_next_day_confirmation_then_applies(monkeypatch, tmp_path):
+    overrides_path = _patch_apply_env(monkeypatch, tmp_path, current_score=72)
+    monkeypatch.setattr("scanner.learning.adaptive_policy.scanner_config.reload_overrides", lambda: None)
+    report = {
+        "recommendation": {
+            "status": "loosen_research_threshold",
+            "auto_apply_safe": True,
+            "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": 65},
+        }
+    }
+
+    first = apply_adaptive_overrides(report, logger=None, now="2026-07-02T18:00:00Z")
+    assert first["status"] == "pending_confirmation"
+    written = json.loads(overrides_path.read_text(encoding="utf-8"))
+    assert "RESEARCH_CANDIDATE_MIN_SCORE" not in written
+    assert written["_meta"]["pending_loosen"]["threshold"] == 65
+
+    same_day = apply_adaptive_overrides(report, logger=None, now="2026-07-02T21:00:00Z")
+    assert same_day["status"] == "pending_confirmation"
+
+    next_day = apply_adaptive_overrides(report, logger=None, now="2026-07-03T18:00:00Z")
+    assert next_day["status"] == "applied"
+    written = json.loads(overrides_path.read_text(encoding="utf-8"))
+    assert written["RESEARCH_CANDIDATE_MIN_SCORE"] == 65
+    assert "pending_loosen" not in written["_meta"]
+    assert "last_auto_change_at" in written["_meta"]
+
+
+def test_loosening_blocked_by_cooldown_after_recent_change(monkeypatch, tmp_path):
+    overrides_path = _patch_apply_env(monkeypatch, tmp_path, current_score=72)
+    overrides_path.write_text(
+        json.dumps({"_meta": {"last_auto_change_at": "2026-07-01T00:00:00+00:00"}}),
+        encoding="utf-8",
+    )
+    report = {
+        "recommendation": {
+            "status": "loosen_research_threshold",
+            "auto_apply_safe": True,
+            "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": 65},
+        }
+    }
+
+    result = apply_adaptive_overrides(report, logger=None, now="2026-07-03T00:00:00Z")
+
+    assert result["status"] == "cooldown_active"
+    assert "RESEARCH_CANDIDATE_MIN_SCORE" not in json.loads(overrides_path.read_text(encoding="utf-8"))
+
+
+def test_tightening_still_applies_immediately(monkeypatch, tmp_path):
+    overrides_path = _patch_apply_env(monkeypatch, tmp_path, current_score=62)
+    monkeypatch.setattr("scanner.learning.adaptive_policy.scanner_config.reload_overrides", lambda: None)
+
+    result = apply_adaptive_overrides(
+        {
+            "recommendation": {
+                "status": "tighten_research_threshold",
+                "auto_apply_safe": True,
+                "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": 67},
+            }
+        },
+        logger=None,
+        now="2026-07-02T18:00:00Z",
+    )
+
+    assert result["status"] == "applied"
+    assert json.loads(overrides_path.read_text(encoding="utf-8"))["RESEARCH_CANDIDATE_MIN_SCORE"] == 67

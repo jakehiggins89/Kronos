@@ -88,6 +88,17 @@ EDGE_VALIDATION_MAX_RECORDS = 1500
 EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
 EDGE_VALIDATION_TOP_K = 25
 
+# Two-sided adaptive policy guards. Loosening only touches the research
+# threshold (a data-collection throttle for paper counterfactuals, not a live
+# gate) and only when a lower-threshold cohort dominates the current one on
+# conservative bounds, after a cooldown and a second-day confirmation.
+ADAPTIVE_LOOSEN_MIN_SAMPLES = 12
+ADAPTIVE_LOOSEN_MIN_WILSON = 0.30
+ADAPTIVE_LOOSEN_LB_MARGIN = 0.05
+ADAPTIVE_LOOSEN_RET_MARGIN = 0.25
+ADAPTIVE_LOOSEN_MAX_STEP = 10
+ADAPTIVE_CHANGE_COOLDOWN_DAYS = 7
+
 MIN_RR_BOUNDS = (1.1, 2.5)
 MIN_KRONOS_AGREEMENT_BOUNDS = (0.50, 0.85)
 MIN_EMPTY_SPACE_SCORE_BOUNDS = (1, 3)
