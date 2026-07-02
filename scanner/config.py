@@ -124,6 +124,17 @@ DEFAULT_WATCHLIST = [
     "PLTR", "HOOD", "RKLB", "AFRM", "IONQ",
 ]
 
+# Extra liquid, optionable names used ONLY to build the historical retrieval
+# index and validation cohort. They nearly double the honest walk-forward
+# sample without touching the live scan watchlist.
+EDGE_INDEX_EXTRA_UNIVERSE = [
+    "AMD", "INTC", "MU", "MRVL", "PYPL",
+    "UBER", "ROKU", "PINS", "DKNG", "PLUG",
+    "LCID", "BAC", "WFC", "C", "DAL",
+    "UAL", "JBLU", "CLF", "VALE", "GOLD",
+    "KGC", "AGNC", "ET", "PBR", "CVS",
+]
+
 
 def _apply_overrides():
     global MIN_RR

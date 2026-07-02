@@ -47,6 +47,7 @@ def test_build_retrieval_index_records_evidence(monkeypatch, tmp_path):
     evidence = start_evidence_run("build_retrieval_index", tmp_path)
     monkeypatch.setattr("scanner.main.EDGE_INDEX_PATH", tmp_path / "edge_index.json")
     monkeypatch.setattr("scanner.main.REPORT_DIR", tmp_path)
+    monkeypatch.setattr("scanner.main.EDGE_INDEX_EXTRA_UNIVERSE", [])
     monkeypatch.setattr("scanner.main.fetch_daily_bars", lambda ticker, research=False: pd.DataFrame({"Close": [1, 2, 3]}))
     monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
 
@@ -60,6 +61,26 @@ def test_build_retrieval_index_records_evidence(monkeypatch, tmp_path):
     assert len(rows) == 2
     assert json.loads(rows[0])["ticker"] == "AAA"
     assert "index_records" in metrics
+
+
+def test_build_retrieval_index_extends_universe_without_duplicates(monkeypatch, tmp_path):
+    logger = logging.getLogger("test")
+    seen = []
+    monkeypatch.setattr("scanner.main.EDGE_INDEX_PATH", tmp_path / "edge_index.json")
+    monkeypatch.setattr("scanner.main.REPORT_DIR", tmp_path)
+    monkeypatch.setattr("scanner.main.EDGE_INDEX_EXTRA_UNIVERSE", ["XTRA", "AAA"])
+    monkeypatch.setattr(
+        "scanner.main.fetch_daily_bars",
+        lambda ticker, research=False: seen.append(ticker) or pd.DataFrame({"Close": [1, 2, 3]}),
+    )
+    monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
+
+    payload = run_build_retrieval_index(["AAA", "BBB"], logger)
+
+    assert seen == ["AAA", "BBB", "XTRA"]
+    assert payload["tickers"] == 3
+    assert payload["watchlist_tickers"] == 2
+    assert payload["extra_universe_tickers"] == 1
 
 
 def test_validate_and_diagnose_record_evidence(monkeypatch, tmp_path):

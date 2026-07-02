@@ -26,6 +26,7 @@ from . import config as scanner_config
 from .alerts.telegram import render_alert_message, send_telegram_message
 from .ai.minimax_adapter import MiniMaxAdapter
 from .backtest.backtest_runner import run_daily_proxy_2y_backtest, run_intraday_60d_backtest
+from .brief import run_brief
 from .config import (
     CALIBRATION_MIN_MATCHED_ROWS,
     CALIBRATION_PASS_AVG_ABS_MAX,
@@ -38,6 +39,7 @@ from .config import (
     EDGE_CROSS_TICKER_EMBARGO_DAYS,
     EDGE_DIAGNOSTIC_REPORT_PATH,
     EDGE_EMBARGO_DAYS,
+    EDGE_INDEX_EXTRA_UNIVERSE,
     EVIDENCE_DIR,
     EDGE_INDEX_PATH,
     EDGE_MIN_ANALOGS,
@@ -172,6 +174,7 @@ def parse_args() -> argparse.Namespace:
             "audit_edge",
             "run_edge_lab",
             "research_ops",
+            "brief",
             "doctor",
         ],
         default="dry_run" if DRY_RUN_DEFAULT else "live",
@@ -1245,9 +1248,12 @@ def _record_report_artifact(evidence_run: EvidenceRun | None, path: Path) -> Non
 
 
 def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: EvidenceRun | None = None) -> dict:
+    # The index universe is wider than the live watchlist: more cross-
+    # sectional history means more honest walk-forward samples per lab run.
+    index_universe = list(dict.fromkeys([*watchlist, *EDGE_INDEX_EXTRA_UNIVERSE]))
     records: list[EdgeRecord] = []
     errors: dict[str, str] = {}
-    for ticker in watchlist:
+    for ticker in index_universe:
         try:
             daily = fetch_daily_bars(ticker, research=True)
             records.extend(build_edge_records_from_bars(ticker, daily, horizon=PRED_DAYS))
@@ -1261,7 +1267,9 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
     payload = {
         "mode": "build_retrieval_index",
         "records": len(records),
-        "tickers": len(watchlist),
+        "tickers": len(index_universe),
+        "watchlist_tickers": len(watchlist),
+        "extra_universe_tickers": len(index_universe) - len(watchlist),
         "errors": errors,
         "path": str(EDGE_INDEX_PATH.resolve()),
     }
@@ -1585,6 +1593,7 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
     diagnostic = timed("diagnostic", lambda: _write_zero_result_diagnostic(logger))
     autotune = timed("autotune", lambda: propose_overrides(load_decisions()))
     edge_lab = timed("edge_lab", lambda: run_edge_lab(watchlist, logger))
+    daily_brief = timed("daily_brief", lambda: run_brief(logger))
     audit = edge_lab.get("audit", {})
     completed_at = _utc_now_iso()
     payload = {
@@ -1602,6 +1611,7 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
         "adaptive_policy": adaptive_policy,
         "edge_run_id": edge_lab.get("run_id"),
         "edge_readiness": audit,
+        "daily_brief": daily_brief,
         "next_actions": _research_next_actions(audit, autotune, adaptive_policy),
     }
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1717,6 +1727,9 @@ def main() -> int:
         return 0
     if args.mode == "research_ops":
         run_research_ops(WATCHLIST, env, logger)
+        return 0
+    if args.mode == "brief":
+        run_brief(logger)
         return 0
     if args.mode == "doctor":
         report = run_doctor()
