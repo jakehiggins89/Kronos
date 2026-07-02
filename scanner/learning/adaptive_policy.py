@@ -12,6 +12,7 @@ from ..config import (
     RESEARCH_CANDIDATE_MIN_SCORE_BOUNDS,
     TUNING_DIR,
 )
+from ..edge.stats import wilson_lower_bound as _wilson_lower_bound
 from .outcome_store import deduplicate_decisions
 
 
@@ -27,17 +28,6 @@ def _is_research_candidate(record: dict) -> bool:
     diagnostics = record.get("research_diagnostics")
     diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
     return bool(diagnostics.get("passed")) or record.get("skip_reason") == "research_candidate"
-
-
-def _wilson_lower_bound(wins: int, total: int, z: float = 1.28) -> float:
-    if total <= 0:
-        return 0.0
-    p_hat = wins / total
-    z2 = z * z
-    denominator = 1.0 + (z2 / total)
-    center = p_hat + (z2 / (2.0 * total))
-    margin = z * math.sqrt((p_hat * (1.0 - p_hat) + (z2 / (4.0 * total))) / total)
-    return max(0.0, (center - margin) / denominator)
 
 
 def _threshold_grid(current_research_score: int) -> list[int]:
