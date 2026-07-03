@@ -7,7 +7,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .. import config as scanner_config
-from .stats import spearman_rank_ic, t_statistic, wilson_lower_bound
+from .stats import day_clustered_t, spearman_rank_ic, t_statistic, tail_retention, tercile_lift, wilson_lower_bound
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -79,7 +79,22 @@ def compute_edge_validation_report(
     by_direction: dict[str, dict] = {}
     for direction in sorted({str(row.get("direction", "unknown")) for row in rows}):
         subset = [row for row in rows if str(row.get("direction", "unknown")) == direction]
-        by_direction[direction] = _metric_block(subset, subset, sum(1 for row in subset if _is_win(row)), slippage_pct)
+        block = _metric_block(subset, subset, sum(1 for row in subset if _is_win(row)), slippage_pct)
+        # Within-direction ranking is THE frontier metric: pooled IC can pass
+        # on direction separation alone (bullish positive vs bearish negative
+        # cohorts) while the score ranks nothing inside either direction.
+        sub_scores = [_finite_float(row.get("edge_score")) for row in subset]
+        sub_r = [_finite_float(row.get("r_multiple")) for row in subset]
+        sub_days = [str(row.get("timestamp", ""))[:10] for row in subset]
+        sub_ids = [f"{row.get('ticker', '')}|{row.get('timestamp', '')}" for row in subset]
+        block["rank_ic_r"] = spearman_rank_ic(sub_scores, sub_r, day_keys=sub_days)
+        block["rank_ic_return"] = spearman_rank_ic(
+            sub_scores, [_finite_float(row.get("outcome_return_pct")) for row in subset], day_keys=sub_days
+        )
+        block["t_stat_r_day_clustered"] = day_clustered_t(sub_r, sub_days)
+        block["tercile_lift"] = tercile_lift(sub_scores, sub_r, sub_days, row_ids=sub_ids)
+        block["tail_retention"] = tail_retention(sub_scores, sub_r, row_ids=sub_ids)
+        by_direction[direction] = block
 
     # Ranking skill over ALL samples: detectable long before any absolute
     # threshold produces 20+ signals (rows are already score-sorted).
@@ -106,8 +121,16 @@ def compute_edge_validation_report(
         "top_k": top_block,
         "by_direction": by_direction,
         "percentiles": percentile_blocks,
-        "rank_ic_return": spearman_rank_ic(scores, [_finite_float(r.get("outcome_return_pct")) for r in rows]),
-        "rank_ic_r": spearman_rank_ic(scores, [_finite_float(r.get("r_multiple")) for r in rows]),
+        "rank_ic_return": spearman_rank_ic(
+            scores,
+            [_finite_float(r.get("outcome_return_pct")) for r in rows],
+            day_keys=[str(r.get("timestamp", ""))[:10] for r in rows],
+        ),
+        "rank_ic_r": spearman_rank_ic(
+            scores,
+            [_finite_float(r.get("r_multiple")) for r in rows],
+            day_keys=[str(r.get("timestamp", ""))[:10] for r in rows],
+        ),
         "decile_spread": {
             "decile_size": decile_size,
             "top_avg_r": round(top_avg_r, 4),

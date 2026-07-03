@@ -103,8 +103,16 @@ def _validation_with_ranking(top_decile_signals=40, bearish_avg_r=0.1, bearish_n
             }
         },
         "by_direction": {
-            "bullish": {"signal_count": 300, "average_r_multiple": 0.2},
-            "bearish": {"signal_count": bearish_n, "average_r_multiple": bearish_avg_r},
+            "bullish": {
+                "signal_count": 300,
+                "average_r_multiple": 0.2,
+                "rank_ic_r": {"ic": 0.10, "p_value": 0.01, "p_value_day_clustered": 0.02, "n": 300},
+            },
+            "bearish": {
+                "signal_count": bearish_n,
+                "average_r_multiple": bearish_avg_r,
+                "rank_ic_r": {"ic": 0.0, "p_value": 0.5, "p_value_day_clustered": 0.6, "n": bearish_n},
+            },
         },
     }
 
@@ -155,11 +163,26 @@ def test_audit_treats_undersampled_direction_as_unproven_not_safe():
 
 
 def test_audit_blocks_promotion_when_direction_history_is_absent():
+    # The promoted candidate's direction has no validation history at all:
+    # it must not be promotable, even while another direction's evidence
+    # keeps the ranking route alive.
     validation = _validation_with_ranking()
-    validation.pop("by_direction")
+    validation["by_direction"].pop("bearish")
 
     promoted_report = compute_edge_audit_report(validation, _scan(direction="bearish", recommendation="promote"))
 
-    assert promoted_report["summary"]["promotable_directions"] == []
+    assert "bearish" not in promoted_report["summary"]["promotable_directions"]
     assert promoted_report["readiness"] == "research_only"
     assert "promoted_candidates_direction_blocked" in promoted_report["warnings"]
+
+
+def test_audit_blocks_when_no_direction_history_exists_at_all():
+    # Removing ALL per-direction evidence must fail the ranking route
+    # closed - pooled IC alone can be pure direction-separation artifact.
+    validation = _validation_with_ranking()
+    validation.pop("by_direction")
+
+    report = compute_edge_audit_report(validation, _scan(direction="bearish", recommendation="promote"))
+
+    assert report["checks"]["ranking_evidence"]["passed"] is False
+    assert report["readiness"] == "blocked"

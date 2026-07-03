@@ -66,9 +66,37 @@ def compute_edge_audit_report(
     top_decile = percentiles.get("top_10_pct", {})
     top_decile = top_decile if isinstance(top_decile, dict) else {}
 
+    # Pooled IC can pass on direction separation alone (a positive bullish
+    # cohort vs a negative bearish one) while the score ranks nothing INSIDE
+    # either direction. Ranking evidence therefore also requires at least one
+    # direction whose within-direction IC clears the bar, judged with the
+    # day-clustered p-value (overlapping outcomes make the raw n
+    # anti-conservative). Missing per-direction blocks fail closed.
+    report_directions = validation_report.get("by_direction", {})
+    report_directions = report_directions if isinstance(report_directions, dict) else {}
+    within_direction_ic: dict[str, dict] = {}
+    within_direction_passed = False
+    for direction in ("bullish", "bearish"):
+        block = report_directions.get(direction)
+        if not isinstance(block, dict):
+            continue
+        direction_ic = block.get("rank_ic_r")
+        if not isinstance(direction_ic, dict):
+            continue
+        ic_value = _finite_float(direction_ic.get("ic"))
+        p_clustered = _finite_float(direction_ic.get("p_value_day_clustered", direction_ic.get("p_value")), 1.0)
+        within_direction_ic[direction] = {
+            "ic": ic_value,
+            "p_value_day_clustered": p_clustered,
+            "n": int(_finite_float(direction_ic.get("n"))),
+        }
+        if ic_value >= min_rank_ic and p_clustered <= max_rank_ic_p_value:
+            within_direction_passed = True
+
     ranking_passed = (
         _finite_float(rank_ic.get("ic")) >= min_rank_ic
         and _finite_float(rank_ic.get("p_value"), 1.0) <= max_rank_ic_p_value
+        and within_direction_passed
         and int(_finite_float(top_decile.get("signal_count"))) >= min_validation_signals
         and _finite_float(top_decile.get("average_r_multiple")) > 0.0
         and _finite_float(top_decile.get("t_stat_r_multiple")) >= min_top_decile_t_stat
@@ -104,11 +132,13 @@ def compute_edge_audit_report(
         "ranking_evidence": _check(
             "ranking_evidence",
             ranking_passed,
-            "Score must rank outcomes across all samples and the top decile must be profitable with enough signals.",
+            "Score must rank outcomes across all samples AND within at least one direction, and the top decile must be profitable with enough signals.",
             {
                 "rank_ic": _finite_float(rank_ic.get("ic")),
                 "rank_ic_p_value": _finite_float(rank_ic.get("p_value"), 1.0),
                 "min_rank_ic": min_rank_ic,
+                "within_direction_ic": within_direction_ic,
+                "within_direction_passed": within_direction_passed,
                 "top_decile_signals": int(_finite_float(top_decile.get("signal_count"))),
                 "min_signals": min_validation_signals,
                 "top_decile_average_r": _finite_float(top_decile.get("average_r_multiple")),
