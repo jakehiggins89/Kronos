@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import json
 import math
 from pathlib import Path
@@ -444,17 +444,37 @@ class EdgeAnalogIndex:
 
 
 def save_edge_index(records: Iterable[EdgeRecord], path: str | Path) -> Path:
+    # Atomic replace: this is a ~30MB single-file store rewritten wholesale
+    # each lab run; a crash mid-write must never corrupt the whole evidence
+    # base.
+    from ..utils.atomic_io import atomic_write_text
+
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps([asdict(record) for record in records], indent=2), encoding="utf-8")
+    atomic_write_text(output_path, json.dumps([asdict(record) for record in records], indent=2))
     return output_path
+
+
+_EDGE_RECORD_FIELDS = {f.name for f in fields(EdgeRecord)}
 
 
 def load_edge_index(path: str | Path) -> list[EdgeRecord]:
     input_path = Path(path)
     if not input_path.exists():
         return []
-    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(input_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"edge index at {input_path} is corrupt (invalid JSON at line {exc.lineno}); "
+            "rebuild it with --mode build_retrieval_index"
+        ) from exc
     if not isinstance(payload, list):
         return []
-    return [EdgeRecord(**row) for row in payload if isinstance(row, dict)]
+    # Ignore unknown keys so an index written by a newer schema (or one
+    # hand-edited with extra fields) degrades gracefully instead of killing
+    # every downstream lab stage with a TypeError.
+    return [
+        EdgeRecord(**{key: value for key, value in row.items() if key in _EDGE_RECORD_FIELDS})
+        for row in payload
+        if isinstance(row, dict)
+    ]

@@ -112,6 +112,32 @@ def test_live_preflight_blocks_research_only_audit(monkeypatch, tmp_path):
     assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
 
 
+def test_live_preflight_blocks_stale_audit(monkeypatch, tmp_path):
+    import os
+    import time
+
+    audit_path = tmp_path / "edge_audit_report.json"
+    audit_path.write_text(
+        json.dumps({"readiness": "paper_trade_only", "blockers": [], "warnings": []}),
+        encoding="utf-8",
+    )
+    # Age the file two days: a stale verdict must not authorize live mode.
+    two_days_ago = time.time() - 48 * 3600
+    os.utime(audit_path, (two_days_ago, two_days_ago))
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
 def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
     audit_path = tmp_path / "edge_audit_report.json"
     audit_path.write_text(

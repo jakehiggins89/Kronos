@@ -1,14 +1,19 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
 
 from ..config import REPORT_DIR
+from ..utils.atomic_io import atomic_write_text
 
 DECISIONS_PATH = REPORT_DIR / "scan_decisions.jsonl"
+QUARANTINE_PATH = REPORT_DIR / "scan_decisions.quarantine.jsonl"
+
+logger = logging.getLogger("scanner.outcome_store")
 
 
 def decision_fingerprint(record: dict) -> str:
@@ -98,23 +103,50 @@ def append_decision(record: dict) -> bool:
 
 
 def load_decisions() -> list[dict]:
+    """Load the journal, tolerating exactly one torn FINAL line.
+
+    A crash mid-append can only tear the last line; that line is quarantined
+    (not silently deleted - the journal is the system of record behind every
+    expectancy statistic). An unparseable line anywhere else means real
+    corruption, and the load fails closed instead of silently shrinking the
+    evidence.
+    """
     if not DECISIONS_PATH.exists():
         return []
+    raw_lines = DECISIONS_PATH.read_text(encoding="utf-8").splitlines()
+    numbered = [(idx + 1, line.strip()) for idx, line in enumerate(raw_lines) if line.strip()]
     rows = []
-    with DECISIONS_PATH.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                continue
+    for position, (line_no, line) in enumerate(numbered):
+        try:
+            rows.append(json.loads(line))
+        except Exception as exc:
+            if position == len(numbered) - 1:
+                _quarantine_torn_line(line_no, line)
+                logger.warning(
+                    "JOURNAL_TORN_LINE: quarantined unparseable final line %d of %s", line_no, DECISIONS_PATH
+                )
+                break
+            raise RuntimeError(
+                f"journal {DECISIONS_PATH} is corrupt at line {line_no} (not a torn append); "
+                f"refusing to silently drop evidence rows: {exc}"
+            ) from exc
     return rows
 
 
+def _quarantine_torn_line(line_no: int, content: str) -> None:
+    try:
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "quarantined_at": pd.Timestamp.utcnow().isoformat(),
+            "source_line": line_no,
+            "content": content,
+        }
+        with QUARANTINE_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.warning("JOURNAL_QUARANTINE_WRITE_FAILED: line %d could not be preserved", line_no)
+
+
 def save_decisions(records: Iterable[dict]):
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    with DECISIONS_PATH.open("w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+    atomic_write_text(DECISIONS_PATH, text)

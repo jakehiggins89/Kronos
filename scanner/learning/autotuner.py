@@ -146,8 +146,9 @@ def apply_overrides(payload: dict, logger) -> dict:
         except Exception:
             existing = {}
     merged = {**existing, **overrides}
-    TUNING_DIR.mkdir(parents=True, exist_ok=True)
-    OVERRIDES_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    from ..utils.atomic_io import atomic_write_json
+
+    atomic_write_json(OVERRIDES_PATH, merged)
     logger.info("AUTOTUNE_OVERRIDES_APPLIED: %s", json.dumps(overrides))
     record_trial("autotune", {"overrides": overrides, "applied": True})
     return {"status": "applied", "path": str(OVERRIDES_PATH), "overrides": overrides, "merged_overrides": merged}

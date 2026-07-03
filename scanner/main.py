@@ -94,6 +94,7 @@ from .strategy.empty_space import score_empty_space
 from .strategy.potter_box import detect_potter_box, score_potter_research_candidate
 from .strategy.potter_doctrine import score_potter_doctrine_v2
 from .tickers import WATCHLIST
+from .utils.atomic_io import atomic_write_json
 from .utils.logging_setup import setup_logging
 from .utils.validation import AlertCandidate
 
@@ -460,6 +461,20 @@ def _preflight_checks(mode: str, env: dict, logger) -> bool:
                 "Preflight failed: live mode requires a current edge audit. "
                 "Run --mode run_edge_lab and inspect %s first.",
                 EDGE_AUDIT_REPORT_PATH,
+            )
+            return False
+        # A stale audit must not authorize live mode: readiness reflects the
+        # evidence as of the last lab run, and the edge can degrade between
+        # runs. 24h covers the daily research_ops cadence with slack.
+        audit_age_hours = (
+            pd.Timestamp.now(tz="UTC")
+            - pd.Timestamp(EDGE_AUDIT_REPORT_PATH.stat().st_mtime, unit="s", tz="UTC")
+        ).total_seconds() / 3600.0
+        if audit_age_hours > 24.0:
+            logger.error(
+                "Preflight failed: edge audit is %.1f hours old (max 24). "
+                "Run --mode run_edge_lab for a current readiness verdict.",
+                audit_age_hours,
             )
             return False
         readiness = str(audit.get("readiness", "")).strip().lower()
@@ -1014,8 +1029,9 @@ def run_batch_calibration(csv_glob: str, logger, sweep_anchors: bool = False) ->
 
 
 def _write_edge_report(path: Path, payload: dict, logger=None) -> dict:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Atomic: the audit report written here authorizes live mode; a torn
+    # write must never leave a half-report behind.
+    atomic_write_json(path, payload)
     if logger is not None:
         logger.info("EDGE_REPORT_SAVED: %s", str(path.resolve()))
     return payload
@@ -1372,8 +1388,7 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     }
     final_model = meta.get("final_model")
     if final_model is not None:
-        META_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        META_MODEL_PATH.write_text(json.dumps(final_model, indent=2), encoding="utf-8")
+        atomic_write_json(META_MODEL_PATH, final_model)
         report["meta_model"]["final_model_path"] = str(META_MODEL_PATH.resolve())
     record_trial(
         "calibration_trial",

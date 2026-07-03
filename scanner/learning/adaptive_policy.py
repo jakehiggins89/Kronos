@@ -384,8 +384,11 @@ def _write_overrides_payload(values: dict, meta: dict) -> dict:
     merged = {key: value for key, value in values.items() if key != "_meta"}
     if meta:
         merged["_meta"] = meta
-    TUNING_DIR.mkdir(parents=True, exist_ok=True)
-    OVERRIDES_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    # Atomic: a torn overrides.json silently reverts every tuned gate to
+    # code defaults AND loses the cooldown/pending-loosen state in _meta.
+    from ..utils.atomic_io import atomic_write_json
+
+    atomic_write_json(OVERRIDES_PATH, merged)
     return merged
 
 
