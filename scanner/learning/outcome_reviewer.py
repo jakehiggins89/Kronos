@@ -15,7 +15,7 @@ from ..config import (
 )
 from ..data.market_data import fetch_intraday_bars
 from ..data.synthetic_sessions import build_synthetic_sessions
-from ..edge.outcomes import resolve_trade_risk_pct, walk_triple_barrier
+from ..edge.outcomes import resolve_plan_target_pct, resolve_trade_risk_pct, walk_triple_barrier
 
 
 def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple[str, float]:
@@ -56,15 +56,22 @@ def _triple_barrier_fields(
     if entry <= 0 or not {"High", "Low", "Close"}.issubset(synthetic.columns):
         return None
     risk = resolve_trade_risk_pct(_session_atr_pct(synthetic, start_pos, entry), 0.0, entry)
+    # Target comes from the SAME exit-geometry config the lab evidence uses
+    # (shipped: no target). A hardcoded 2R here made the adaptive policy
+    # learn from an exit geometry that is no longer traded. Journal records
+    # carry no empty-space levels, so level-based sweep modes resolve to
+    # their documented 2R fallback - identical to the old behaviour.
+    plan = resolve_plan_target_pct(0.0, 0.0, 0.0, entry, risk)
     outcome = walk_triple_barrier(
         synthetic.iloc[start_pos + 1 : target_pos + 1],
         direction,
         entry,
         risk,
-        2.0 * risk,
+        plan["target_pct"],
     )
     if outcome["exit_reason"] == "no_data":
         return None
+    outcome["target_mode"] = plan["target_mode"]
     return outcome
 
 
@@ -142,6 +149,7 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             if barrier is not None:
                 rec["outcome_label"] = barrier["label"]
                 rec["outcome_method"] = barrier["method"]
+                rec["outcome_target_mode"] = barrier.get("target_mode")
                 rec["outcome_return_pct"] = barrier["return_pct"]
                 rec["outcome_r_multiple"] = barrier["r_multiple"]
                 rec["outcome_exit_reason"] = barrier["exit_reason"]
