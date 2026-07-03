@@ -112,6 +112,34 @@ def test_index_matches_brute_force_for_direction_and_cross_ticker_filters():
     assert [row["ticker"] for row in indexed] == [row["ticker"] for row in direct] == ["DDD"]
 
 
+def test_purge_config_covers_outcome_horizon():
+    # An analog's 5-trading-bar outcome spans up to ~9 calendar days (with a
+    # holiday). If either embargo is shorter, analog outcomes that resolve
+    # AFTER the query bar leak future market moves into the query's score.
+    from scanner import config as scanner_config
+
+    min_covering_days = 9  # PRED_DAYS=5 trading bars, worst-case calendar span
+    assert scanner_config.PRED_DAYS == 5
+    assert scanner_config.EDGE_EMBARGO_DAYS >= min_covering_days
+    assert scanner_config.EDGE_CROSS_TICKER_EMBARGO_DAYS >= min_covering_days
+
+
+def test_cross_ticker_embargo_excludes_unresolved_outcome_windows():
+    # Analog entered 3 days before the query: its outcome window still spans
+    # the query's future. Under a horizon-covering embargo it must be blocked.
+    query = {
+        "ticker": "AAA",
+        "timestamp": "2026-02-10T00:00:00-05:00",
+        **_shape_features(),
+    }
+    overlapping = _record("BBB", "2026-02-07T00:00:00-05:00", features=_shape_features())
+    resolved = _record("CCC", "2026-01-10T00:00:00-05:00", features=_shape_features())
+
+    analogs = find_analogs(query, [overlapping, resolved], k=5, cross_ticker_embargo_days=9)
+
+    assert [row["ticker"] for row in analogs] == ["CCC"]
+
+
 def test_select_recent_records_picks_most_recent_by_time_across_tickers():
     records = [
         _record("AAA", "2026-01-01T00:00:00-05:00"),

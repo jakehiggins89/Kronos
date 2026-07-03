@@ -1349,6 +1349,12 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     report["mode"] = "validate_edge"
     report["validation_method"] = "purged_walk_forward"
     report["future_analogs_allowed"] = False
+    report["purge_config"] = {
+        "embargo_days": EDGE_EMBARGO_DAYS,
+        "cross_ticker_embargo_days": EDGE_CROSS_TICKER_EMBARGO_DAYS,
+        "outcome_horizon_bars": PRED_DAYS,
+        "outcome_window_covered": min(EDGE_EMBARGO_DAYS, EDGE_CROSS_TICKER_EMBARGO_DAYS) >= 9,
+    }
     report["candidate_count"] = len(candidates)
     report["index_records"] = len(records)
     report["validation_record_limit"] = EDGE_VALIDATION_MAX_RECORDS
