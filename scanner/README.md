@@ -36,7 +36,15 @@ Provider behavior:
 - `MARKET_DATA_PROVIDER=yfinance`: yfinance only.
 - Current scans use `ALPACA_FEED` (`iex` on the Basic plan).
 - Historical index building and `research_scan` request SIP data with a 16-minute delay, which fits Alpaca Basic's delayed consolidated-data access.
+- All Alpaca bars (daily and 30m intraday) are fetched with split adjustment (price AND volume), so a split inside a lookback window no longer reads as a giant gap or a fake volume spike. The yfinance daily fallback runs with `repair=True` (fixes Yahoo's occasional unapplied splits and 100x glitches); yfinance intraday is as-traded and relies on the bar contract to flag split gaps.
+- Outcome review (`review_outcomes`) resolves pending decisions on the 16-minute-delayed SIP feed - resolution happens days after the decision, so the delay is free and consolidated High/Low (not the ~3% IEX slice) decides whether stops/targets were really touched. Records whose entry price no longer matches the refetched history's scale (a split between decision and review) are quarantined as `not_applicable` instead of resolving to fiction.
 - Options selection joins Alpaca indicative snapshots for quotes, volume, IV, and Greeks availability with yfinance open interest. This improves research evidence but remains below execution-grade OPRA quality.
+
+Data-accuracy gates on the evidence index (2026-07-03):
+- Fail-closed OHLCV bar contract per ticker: NaN/non-positive prices, High/Low body violations, negative volume, duplicate/unsorted timestamps, zero-volume bars with price range, forward-filled flat bars, stale-feed runs (5+ identical closes / 4+ identical bars), plus warnings for split-ratio-shaped overnight gaps (catches the 3:2 splits the 45% move rule misses).
+- NYSE session-completeness check via `pandas_market_calendars`: missing expected sessions warn at <=5 and fail the ticker beyond that (halted/partially-delivered histories cannot silently become evidence).
+- Cross-source verification: when `TRADIER_API_TOKEN` is set, each ticker's daily returns are compared against Tradier's independent history feed; a split-scale divergence (>20pp on one session) or a systemic (>5%) disagreement rate fails the ticker for the run. No token or transport failure = skipped, never a block.
+- The current session's still-forming daily bar is dropped at index build, so a mid-session scheduled run cannot ingest ~60%-of-a-day bars as evidence.
 
 ## Modes
 ```bat
@@ -229,13 +237,16 @@ Behavior:
 - `low_feed_confidence` (equities): free Alpaca IEX remains the bar source. Full-SIP options: Alpaca Algo Trader Plus $99/mo (also real-time OPRA options on the existing SDK: `feed="sip"` / `feed="opra"`), or Polygon/Massive Stocks Starter $29/mo for delayed full-market bars.
 
 ## Limitations
-- Free Alpaca IEX feed is not full SIP coverage.
-- yfinance data quality and intraday history depth are limited.
+- Free Alpaca IEX feed is not full SIP coverage; live/dry-run scans see IEX-only bars (~3% of consolidated volume, missing bars on thin names). Evidence paths (index build, research scans, outcome review) use delayed SIP.
+- Earnings dates come from Yahoo and are estimates, not confirmations (the gate adds a +1 day cushion and fails closed on unknown/stale dates, but a source error larger than one day can still slip through; a second earnings source would need a paid/keyed API).
+- yfinance data quality and intraday history depth are limited; it is a fallback, not the primary.
+- Synthetic 24h sessions include extended-hours prints; a barrier touch in thin ETH trade may not have been executable for an options position (options trade ~9:30-16:15 ET). The lab's daily-bar index does not have this exposure.
 - Daily 2y backtest is proxy only and does not validate true 24h ETH parity.
 - TradingView parity is unverified until calibration CSV comparison is run.
 - Options liquidity can change intraday; pass/fail is point-in-time.
 - Kronos output is treated conservatively; unknown format blocks alerts.
 - Early-stage self-tuning will show `insufficient_samples` until enough resolved outcomes accumulate.
+- Tradier greeks/IV are hourly ORATS snapshots (research-grade); chain bid/ask/volume/OI are realtime on the production token.
 
 ## Before Enabling Live Alerts
 1. Rotate Telegram bot token and update `.env`.
