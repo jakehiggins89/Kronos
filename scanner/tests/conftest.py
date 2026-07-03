@@ -20,3 +20,9 @@ def _isolate_append_only_stores(monkeypatch, tmp_path):
         tmp_path / "trial_registry.jsonl",
     )
     monkeypatch.setattr("scanner.main.META_MODEL_PATH", tmp_path / "meta_model.json", raising=False)
+    # Live credentials in the shell would let tests reach real provider APIs
+    # (e.g. the Tradier cross-source check). Tests that need creds set their
+    # own fakes via monkeypatch.setenv.
+    monkeypatch.delenv("TRADIER_API_TOKEN", raising=False)
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)

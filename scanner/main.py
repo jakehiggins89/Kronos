@@ -59,9 +59,15 @@ from .config import (
     SYNTHETIC_SESSION_ANCHOR_MINUTE,
     TIMEZONE,
 )
-from .data.bar_contract import check_ohlcv_contract
+from .data.bar_contract import check_ohlcv_contract, check_session_completeness
+from .data.cross_check import cross_check_daily_bars
 from .data.events import assess_event_risk
-from .data.market_data import fetch_daily_bars, fetch_intraday_bars, validate_ticker
+from .data.market_data import (
+    drop_in_progress_daily_bar,
+    fetch_daily_bars,
+    fetch_intraday_bars,
+    validate_ticker,
+)
 from .data.options_data import select_options_contract
 from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
@@ -1287,10 +1293,23 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
     records: list[EdgeRecord] = []
     errors: dict[str, str] = {}
     contract_warnings: dict[str, list[str]] = {}
+    partial_bars_dropped: dict[str, str] = {}
+    cross_checks: dict[str, dict] = {}
     for ticker in index_universe:
         try:
             daily = fetch_daily_bars(ticker, research=True, adjustment=EDGE_BARS_ADJUSTMENT)
+            daily = drop_in_progress_daily_bar(daily)
+            dropped_ts = daily.attrs.get("dropped_in_progress_bar")
+            if dropped_ts:
+                partial_bars_dropped[ticker] = str(dropped_ts)
             violations, warnings = check_ohlcv_contract(daily)
+            session_violations, session_warnings, _session_stats = check_session_completeness(daily)
+            violations.extend(session_violations)
+            warnings.extend(session_warnings)
+            cross = cross_check_daily_bars(ticker, daily, logger)
+            cross_checks[ticker] = cross
+            if cross.get("status") == "disagreement":
+                violations.append(f"cross-source disagreement: {cross.get('reason')}")
             if violations:
                 raise RuntimeError(f"bar contract violation: {'; '.join(violations)}")
             if warnings:
@@ -1314,6 +1333,8 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
         "errors": errors,
         "bars_adjustment": EDGE_BARS_ADJUSTMENT,
         "contract_warnings": contract_warnings,
+        "partial_bars_dropped": partial_bars_dropped,
+        "cross_source_checks": cross_checks,
         "path": str(EDGE_INDEX_PATH.resolve()),
     }
     if evidence_run is not None:
