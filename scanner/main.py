@@ -36,6 +36,7 @@ from .config import (
     EDGE_ANALOG_DIRECTION_MATCH,
     EDGE_ANALOG_K,
     EDGE_AUDIT_REPORT_PATH,
+    EDGE_BARS_ADJUSTMENT,
     EDGE_CROSS_TICKER_EMBARGO_DAYS,
     EDGE_DIAGNOSTIC_REPORT_PATH,
     EDGE_EMBARGO_DAYS,
@@ -56,6 +57,7 @@ from .config import (
     SYNTHETIC_SESSION_ANCHOR_MINUTE,
     TIMEZONE,
 )
+from .data.bar_contract import check_ohlcv_contract
 from .data.events import assess_event_risk
 from .data.market_data import fetch_daily_bars, fetch_intraday_bars, validate_ticker
 from .data.options_data import select_options_contract
@@ -1258,9 +1260,17 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
     index_universe = list(dict.fromkeys([*watchlist, *EDGE_INDEX_EXTRA_UNIVERSE]))
     records: list[EdgeRecord] = []
     errors: dict[str, str] = {}
+    contract_warnings: dict[str, list[str]] = {}
     for ticker in index_universe:
         try:
-            daily = fetch_daily_bars(ticker, research=True)
+            daily = fetch_daily_bars(ticker, research=True, adjustment=EDGE_BARS_ADJUSTMENT)
+            violations, warnings = check_ohlcv_contract(daily)
+            if violations:
+                raise RuntimeError(f"bar contract violation: {'; '.join(violations)}")
+            if warnings:
+                contract_warnings[ticker] = warnings
+                for warning in warnings:
+                    logger.warning("EDGE_INDEX_BAR_WARNING: %s %s", ticker, warning)
             records.extend(build_edge_records_from_bars(ticker, daily, horizon=PRED_DAYS))
         except Exception as exc:
             errors[ticker] = str(exc)
@@ -1276,6 +1286,8 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
         "watchlist_tickers": len(watchlist),
         "extra_universe_tickers": len(index_universe) - len(watchlist),
         "errors": errors,
+        "bars_adjustment": EDGE_BARS_ADJUSTMENT,
+        "contract_warnings": contract_warnings,
         "path": str(EDGE_INDEX_PATH.resolve()),
     }
     if evidence_run is not None:

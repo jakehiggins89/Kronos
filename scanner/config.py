@@ -121,6 +121,16 @@ EDGE_EXIT_TARGET_MODE = os.getenv("KRONOS_EXIT_TARGET_MODE", "none")
 EDGE_EXIT_TARGET_R_FLOOR = float(os.getenv("KRONOS_EXIT_TARGET_R_FLOOR", "0.0"))
 EDGE_EXIT_TARGET_ATR_MULT = float(os.getenv("KRONOS_EXIT_TARGET_ATR_MULT", "2.0"))
 
+# Corporate-action basis for the DAILY bars that feed the edge index. "raw"
+# (the pre-2026-07-02 behaviour) let splits and dividends read as real price
+# moves inside the 5-bar outcome window - a reverse split looks like a
+# catastrophic gap and a dividend like a stop-clipping drop (the index's top
+# ticker by record count, AGNC, distributes ~1%/month). "split" removes the
+# corruption without crediting dividends an options holder never receives.
+# Env-overridable for sweeps, NOT an adaptive-policy tunable - the outcome
+# definition must not drift under the feedback loop judged against it.
+EDGE_BARS_ADJUSTMENT = os.getenv("KRONOS_BARS_ADJUSTMENT", "split")
+
 # Two-sided adaptive policy guards. Loosening only touches the research
 # threshold (a data-collection throttle for paper counterfactuals, not a live
 # gate) and only when a lower-threshold cohort dominates the current one on

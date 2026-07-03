@@ -14,6 +14,20 @@ from scanner.main import (
 )
 
 
+def _daily_bars():
+    idx = pd.date_range("2026-01-05", periods=3, freq="D", tz="America/New_York")
+    return pd.DataFrame(
+        {
+            "Open": [10.0, 10.5, 11.0],
+            "High": [10.6, 11.1, 11.6],
+            "Low": [9.8, 10.3, 10.8],
+            "Close": [10.5, 11.0, 11.5],
+            "Volume": [1000, 1100, 1200],
+        },
+        index=idx,
+    )
+
+
 def _edge_record(ticker="TEST", timestamp="2026-01-01T00:00:00-05:00"):
     features = {
         "ticker": ticker,
@@ -48,7 +62,7 @@ def test_build_retrieval_index_records_evidence(monkeypatch, tmp_path):
     monkeypatch.setattr("scanner.main.EDGE_INDEX_PATH", tmp_path / "edge_index.json")
     monkeypatch.setattr("scanner.main.REPORT_DIR", tmp_path)
     monkeypatch.setattr("scanner.main.EDGE_INDEX_EXTRA_UNIVERSE", [])
-    monkeypatch.setattr("scanner.main.fetch_daily_bars", lambda ticker, research=False: pd.DataFrame({"Close": [1, 2, 3]}))
+    monkeypatch.setattr("scanner.main.fetch_daily_bars", lambda ticker, research=False, adjustment="raw": _daily_bars())
     monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
 
     payload = run_build_retrieval_index(["AAA", "BBB"], logger, evidence_run=evidence)
@@ -63,6 +77,30 @@ def test_build_retrieval_index_records_evidence(monkeypatch, tmp_path):
     assert "index_records" in metrics
 
 
+def test_build_retrieval_index_fails_closed_on_bar_contract_violation(monkeypatch, tmp_path):
+    logger = logging.getLogger("test")
+    monkeypatch.setattr("scanner.main.EDGE_INDEX_PATH", tmp_path / "edge_index.json")
+    monkeypatch.setattr("scanner.main.REPORT_DIR", tmp_path)
+    monkeypatch.setattr("scanner.main.EDGE_INDEX_EXTRA_UNIVERSE", [])
+
+    def fake_fetch(ticker, research=False, adjustment="raw"):
+        if ticker == "BAD":
+            bars = _daily_bars()
+            bars.loc[bars.index[0], "High"] = 0.0  # High below body: hard violation
+            return bars
+        return _daily_bars()
+
+    monkeypatch.setattr("scanner.main.fetch_daily_bars", fake_fetch)
+    monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
+
+    payload = run_build_retrieval_index(["GOOD", "BAD"], logger)
+
+    assert payload["records"] == 1
+    assert "BAD" in payload["errors"]
+    assert "bar contract violation" in payload["errors"]["BAD"]
+    assert payload["bars_adjustment"]
+
+
 def test_build_retrieval_index_extends_universe_without_duplicates(monkeypatch, tmp_path):
     logger = logging.getLogger("test")
     seen = []
@@ -71,7 +109,7 @@ def test_build_retrieval_index_extends_universe_without_duplicates(monkeypatch, 
     monkeypatch.setattr("scanner.main.EDGE_INDEX_EXTRA_UNIVERSE", ["XTRA", "AAA"])
     monkeypatch.setattr(
         "scanner.main.fetch_daily_bars",
-        lambda ticker, research=False: seen.append(ticker) or pd.DataFrame({"Close": [1, 2, 3]}),
+        lambda ticker, research=False, adjustment="raw": seen.append(ticker) or _daily_bars(),
     )
     monkeypatch.setattr("scanner.main.build_edge_records_from_bars", lambda ticker, bars, horizon: [_edge_record(ticker)])
 

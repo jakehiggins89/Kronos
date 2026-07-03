@@ -27,7 +27,14 @@ def _to_ny_index(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
     if out.index.tz is None:
-        out.index = out.index.tz_localize("UTC")
+        # Naive midnight-only indexes are calendar DATES (yfinance daily bars),
+        # not UTC instants - localizing them to UTC would shift every session
+        # to the prior NY evening. Localize dates to NY directly.
+        idx = pd.DatetimeIndex(out.index)
+        if len(idx) and (idx == idx.normalize()).all():
+            out.index = idx.tz_localize(TIMEZONE)
+            return out
+        out.index = idx.tz_localize("UTC")
     out.index = out.index.tz_convert(TIMEZONE)
     return out
 
@@ -81,8 +88,20 @@ def _persist_request_id(service: str, endpoint: str, request_id: str | None, sta
 
 def _alpaca_get(url: str, headers: dict, params: dict | None = None, timeout: int = 30, retries: int = 3) -> requests.Response:
     last_resp = None
+    last_exc: Exception | None = None
     for attempt in range(retries):
-        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+        except requests.RequestException as exc:
+            # Transport blips (timeout, reset) deserve the same retry budget
+            # as retryable HTTP statuses instead of instantly falling through
+            # to the degraded provider.
+            last_exc = exc
+            _persist_request_id("alpaca", url, None, None)
+            if attempt < retries - 1:
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            raise
         req_id = resp.headers.get("X-Request-ID")
         _persist_request_id("alpaca", url, req_id, resp.status_code)
         last_resp = resp
@@ -91,6 +110,8 @@ def _alpaca_get(url: str, headers: dict, params: dict | None = None, timeout: in
                 time.sleep(0.8 * (attempt + 1))
                 continue
         return resp
+    if last_resp is None and last_exc is not None:
+        raise last_exc
     return last_resp
 
 
@@ -109,6 +130,7 @@ def _fetch_alpaca_bars(
     *,
     feed: str | None = None,
     delay_minutes: int = 0,
+    adjustment: str = "raw",
 ) -> pd.DataFrame:
     key, secret = _alpaca_credentials()
     if not key or not secret:
@@ -127,7 +149,7 @@ def _fetch_alpaca_bars(
             "timeframe": timeframe,
             "start": start.tz_convert("UTC").isoformat().replace("+00:00", "Z"),
             "end": end.tz_convert("UTC").isoformat().replace("+00:00", "Z"),
-            "adjustment": "raw",
+            "adjustment": adjustment,
             "sort": "asc",
             "limit": 10000,
             "feed": feed,
@@ -158,6 +180,7 @@ def _fetch_alpaca_bars(
             "data_provider": "alpaca",
             "data_feed": feed,
             "data_delay_minutes": int(delay_minutes),
+            "data_adjustment": adjustment,
         }
     )
     return result
@@ -268,9 +291,11 @@ def fetch_intraday_bars(
             )
             result.attrs.update({"data_provider": "alpaca", "data_feed": feed, "data_delay_minutes": delay_minutes})
             return result
-        except Exception:
+        except Exception as exc:
             if provider == "alpaca":
                 raise
+            logger = logging.getLogger("scanner.market_data")
+            logger.warning("PROVIDER_FALLBACK: %s intraday bars alpaca->yfinance (%s)", ticker, exc)
 
     data = yf.download(
         tickers=ticker,
@@ -288,7 +313,13 @@ def fetch_intraday_bars(
     return result
 
 
-def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK, *, research: bool = False) -> pd.DataFrame:
+def fetch_daily_bars(
+    ticker: str,
+    period: str = DAILY_PROXY_LOOKBACK,
+    *,
+    research: bool = False,
+    adjustment: str = "raw",
+) -> pd.DataFrame:
     provider = _provider_choice()
     if provider in {"auto", "alpaca"} and _alpaca_enabled():
         try:
@@ -306,10 +337,13 @@ def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK, *, researc
                 end=end,
                 feed=feed,
                 delay_minutes=delay_minutes,
+                adjustment=adjustment,
             )
-        except Exception:
+        except Exception as exc:
             if provider == "alpaca":
                 raise
+            logger = logging.getLogger("scanner.market_data")
+            logger.warning("PROVIDER_FALLBACK: %s daily bars alpaca->yfinance (%s)", ticker, exc)
 
     data = yf.download(
         tickers=ticker,
@@ -323,7 +357,16 @@ def fetch_daily_bars(ticker: str, period: str = DAILY_PROXY_LOOKBACK, *, researc
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis=1)
     result = _to_ny_index(data)
-    result.attrs.update({"data_provider": "yfinance", "data_feed": None, "data_delay_minutes": 0})
+    # Yahoo's unadjusted series is already split-adjusted (never truly raw);
+    # stamp the actual basis so evidence provenance stays honest.
+    result.attrs.update(
+        {
+            "data_provider": "yfinance",
+            "data_feed": None,
+            "data_delay_minutes": 0,
+            "data_adjustment": "split",
+        }
+    )
     return result
 
 
