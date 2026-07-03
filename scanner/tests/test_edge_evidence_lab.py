@@ -149,6 +149,11 @@ def test_validate_and_diagnose_record_evidence(monkeypatch, tmp_path):
     assert diagnostic["index_records"] == 3
     assert "edge_score" in validation_rows
     assert "diagnose_edge" in diagnostic_rows
+    # Meta-model block is always present and fails CLOSED on tiny history.
+    assert validation["meta_model"]["acceptance"]["passed"] is False
+    assert validation["meta_model"]["metrics"]["insufficient"] is True
+    assert "predictions" not in validation["meta_model"]
+    assert "final_model" not in validation["meta_model"]
 
 
 def test_validate_edge_reuses_analog_index(monkeypatch, tmp_path):

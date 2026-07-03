@@ -51,6 +51,7 @@ from .config import (
     EDGE_VALIDATION_TOP_K,
     LOG_DIR,
     MARKET_DATA_PROVIDER_DEFAULT,
+    META_MODEL_PATH,
     PRED_DAYS,
     REPORT_DIR,
     SYNTHETIC_SESSION_ANCHOR_HOUR,
@@ -64,6 +65,11 @@ from .data.options_data import select_options_contract
 from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
 from .edge.audit import compute_edge_audit_report
+from .edge.calibration import (
+    predict_expected_r,
+    predict_win_probability,
+    walk_forward_calibration,
+)
 from .edge.features import extract_edge_features
 from .edge.retrieval import (
     EdgeAnalogIndex,
@@ -82,6 +88,7 @@ from .learning.autotuner import apply_overrides, propose_overrides
 from .learning.outcome_reviewer import review_pending_outcomes
 from .learning.outcome_store import DECISIONS_PATH, append_decision, deduplicate_decisions, load_decisions, save_decisions
 from .learning.replay_runner import run_replay_eval
+from .learning.trial_registry import record_trial
 from .models.kronos_adapter import KronosAdapter
 from .strategy.empty_space import score_empty_space
 from .strategy.potter_box import detect_potter_box, score_potter_research_candidate
@@ -1338,6 +1345,20 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
                 "outcome_method": record.outcome_method,
             }
         )
+    # Within-direction meta-model: expanding-window OOF evaluation over the
+    # FULL index history (far more power than the validation slice), with
+    # per-record predictions joined back onto the validation candidates.
+    # Strictly advisory - it ranks inside a direction, it never gates.
+    meta = walk_forward_calibration(records)
+    meta_predictions = meta.get("predictions", {})
+    for candidate in candidates:
+        if str(candidate.get("direction")) != meta.get("direction"):
+            continue
+        key = f"{candidate.get('ticker', '')}|{candidate.get('timestamp', '')}"
+        p_win = meta_predictions.get(key)
+        if p_win is not None:
+            candidate["p_win_meta"] = round(float(p_win), 4)
+
     if evidence_run is not None:
         evidence_run.record_rows("validation_candidates", candidates)
     report = compute_edge_validation_report(
@@ -1345,6 +1366,26 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
         thresholds=EDGE_VALIDATION_THRESHOLDS,
         top_k=EDGE_VALIDATION_TOP_K,
         slippage_pct=0.05,
+    )
+    report["meta_model"] = {
+        key: value for key, value in meta.items() if key not in {"predictions", "final_model"}
+    }
+    final_model = meta.get("final_model")
+    if final_model is not None:
+        META_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        META_MODEL_PATH.write_text(json.dumps(final_model, indent=2), encoding="utf-8")
+        report["meta_model"]["final_model_path"] = str(META_MODEL_PATH.resolve())
+    record_trial(
+        "calibration_trial",
+        {
+            "direction": meta.get("direction"),
+            "model_class": meta.get("model_class"),
+            "model_version": meta.get("model_version"),
+            "config": meta.get("config"),
+            "n_evaluated": meta.get("n_evaluated"),
+            "metrics": meta.get("metrics"),
+            "acceptance": meta.get("acceptance"),
+        },
     )
     report["mode"] = "validate_edge"
     report["validation_method"] = "purged_walk_forward"
@@ -1397,6 +1438,7 @@ def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None
         )
         logger.info("EDGE_SCAN_TICKER_DONE: %s status=%s duration_seconds=%.3f", ticker, ticker_timings[-1]["status"], duration)
     ranked = sorted(candidates, key=lambda row: float(row.get("edge_score", 0.0)), reverse=True)
+    _attach_meta_advisory(ranked, logger)
     completed_at = _utc_now_iso()
     payload = {
         "mode": "edge_scan",
@@ -1425,6 +1467,37 @@ def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None
     result = _write_edge_report(EDGE_SCAN_REPORT_PATH, payload, logger)
     _record_report_artifact(evidence_run, EDGE_SCAN_REPORT_PATH)
     return result
+
+
+def _attach_meta_advisory(candidates: list[dict], logger) -> None:
+    """Attach advisory p_win_meta / expected_r_meta to live scan candidates.
+
+    Ranking and recommendations are untouched: the meta-model is a
+    within-direction advisory layer that must never gate or promote. It only
+    annotates candidates in its trained direction (bullish).
+    """
+    try:
+        if not META_MODEL_PATH.exists():
+            return
+        model = json.loads(META_MODEL_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("META_MODEL_LOAD_FAILED: %s", exc)
+        return
+    if not isinstance(model, dict):
+        return
+    for row in candidates:
+        if str(row.get("direction")) != "bullish":
+            continue
+        features = row.get("features")
+        if not isinstance(features, dict):
+            continue
+        p_win = predict_win_probability(model, features)
+        if p_win is None:
+            continue
+        row["p_win_meta"] = round(float(p_win), 4)
+        expected_r = predict_expected_r(model, features)
+        if expected_r is not None:
+            row["expected_r_meta"] = round(float(expected_r), 4)
 
 
 def run_diagnose_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:

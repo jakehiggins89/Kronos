@@ -15,6 +15,7 @@ EDGE_SCAN_REPORT_PATH = REPORT_DIR / "edge_scan_report.json"
 EDGE_VALIDATION_REPORT_PATH = REPORT_DIR / "edge_validation_report.json"
 EDGE_DIAGNOSTIC_REPORT_PATH = REPORT_DIR / "edge_diagnostic_report.json"
 EDGE_AUDIT_REPORT_PATH = REPORT_DIR / "edge_audit_report.json"
+META_MODEL_PATH = REPORT_DIR / "meta_model.json"
 
 MIN_STOCK_PRICE = 5.00
 MIN_KRONOS_AGREEMENT = 0.65
