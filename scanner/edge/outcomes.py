@@ -59,6 +59,12 @@ def resolve_plan_target_pct(
     r_floor = float(r_floor) if r_floor is not None else _finite_float(scanner_config.EDGE_EXIT_TARGET_R_FLOOR)
     atr_mult = float(atr_mult) if atr_mult is not None else _finite_float(scanner_config.EDGE_EXIT_TARGET_ATR_MULT)
 
+    if mode == "none":
+        # No profit target: exits are stop or horizon only. The 2026-07-02
+        # sweep showed every tested target truncates more bullish upside than
+        # it locks in (nearest-level +0.11R cash-outs vs +0.53R horizon runs).
+        return {"target_pct": None, "target_mode": "none"}
+
     risk = _finite_float(risk_pct)
     nearest = _finite_float(nearest_target_pct)
     nxt = _finite_float(next_target_pct)
@@ -97,7 +103,7 @@ def walk_triple_barrier(
     direction: str,
     entry: float,
     risk_pct: float,
-    target_pct: float,
+    target_pct: float | None,
 ) -> dict[str, Any]:
     """Evaluate a stop/target/time trade plan against an OHLC path.
 
@@ -107,6 +113,10 @@ def walk_triple_barrier(
     the expectancy that gates promotion. Target fills stay capped at the
     target price (the conservative side of a favorable gap). Same-bar
     stop+target is unknowable from OHLC and resolves to the stop.
+
+    `target_pct=None` means the plan has NO profit target (stop/horizon
+    exits only); a zero or degenerate numeric target keeps the legacy
+    missing-data fallback of 2x risk.
     """
     result = {
         "return_pct": 0.0,
@@ -124,8 +134,9 @@ def walk_triple_barrier(
     risk = _finite_float(risk_pct)
     if risk <= 0.0:
         return result
+    no_target = target_pct is None
     target = _finite_float(target_pct)
-    if target <= 0.05:
+    if not no_target and target <= 0.05:
         target = 2.0 * risk
 
     sign = 1.0 if direction == "bullish" else -1.0
@@ -140,7 +151,10 @@ def walk_triple_barrier(
         low = _finite_float(path["Low"].iloc[pos])
         high = _finite_float(path["High"].iloc[pos])
         stop_touched = low <= stop_price if direction == "bullish" else high >= stop_price
-        target_touched = high >= target_price if direction == "bullish" else low <= target_price
+        target_touched = (
+            not no_target
+            and (high >= target_price if direction == "bullish" else low <= target_price)
+        )
         if stop_touched:
             exit_price = stop_price
             if has_open:

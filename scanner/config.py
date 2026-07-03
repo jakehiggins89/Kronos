@@ -104,14 +104,20 @@ EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
 EDGE_VALIDATION_TOP_K = 25
 
 # Exit geometry for the lab's encoded trade plan. The stop side stays the
-# empty-space risk (ATR/2% fallback); these choose the TARGET. The first lab
-# run showed the nearest empty-space level sits too close to the stop (66%
-# target-hit rate, negative expectancy), so alternatives are swept through
-# run_edge_lab. Env overrides let a sweep flip variants per process without
-# code edits; the committed defaults are the shipped geometry. These are NOT
-# adaptive-policy tunables - the outcome definition must not drift under the
-# feedback loop that is judged against it.
-EDGE_EXIT_TARGET_MODE = os.getenv("KRONOS_EXIT_TARGET_MODE", "nearest_empty_space")
+# empty-space risk (ATR/2% fallback); these choose the TARGET. Env overrides
+# let a sweep flip variants per process without code edits; the committed
+# defaults are the shipped geometry. These are NOT adaptive-policy tunables -
+# the outcome definition must not drift under the feedback loop that is
+# judged against it.
+#
+# Shipped default "none" (no profit target; stop/horizon exits only) per the
+# 2026-07-02 six-variant sweep (trial_registry kind=exit_geometry_trial):
+# every tested target truncated more bullish upside than it locked in -
+# nearest level -0.014 avg R, 1.5R floor +0.135, 2R floor +0.153, 2xATR
+# +0.158, no target +0.195 (t=5.16, n=910 walk-forward bullish samples).
+# Bearish stayed negative under all six geometries and remains
+# direction-blocked by the audit.
+EDGE_EXIT_TARGET_MODE = os.getenv("KRONOS_EXIT_TARGET_MODE", "none")
 EDGE_EXIT_TARGET_R_FLOOR = float(os.getenv("KRONOS_EXIT_TARGET_R_FLOOR", "0.0"))
 EDGE_EXIT_TARGET_ATR_MULT = float(os.getenv("KRONOS_EXIT_TARGET_ATR_MULT", "2.0"))
 

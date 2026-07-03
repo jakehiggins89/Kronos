@@ -171,7 +171,8 @@ def _future_outcome(
         risk,
     )
     outcome = walk_triple_barrier(future, direction, entry, risk, plan["target_pct"])
-    outcome["target_pct_used"] = plan["target_pct"]
+    # None target (no-target plan) is stored as 0.0; target_mode disambiguates.
+    outcome["target_pct_used"] = plan["target_pct"] if plan["target_pct"] is not None else 0.0
     outcome["target_mode"] = plan["target_mode"]
     return outcome
 

@@ -205,6 +205,50 @@ def test_plan_target_atr_multiple_and_fallback():
     assert fallback["target_mode"] == "atr_multiple:fallback_2r"
 
 
+def test_plan_target_none_mode_disables_the_target():
+    plan = resolve_plan_target_pct(3.0, 6.0, 1.0, 100.0, 2.0, mode="none", r_floor=1.5)
+    assert plan == {"target_pct": None, "target_mode": "none"}
+
+
+def test_no_target_plan_rides_past_would_be_targets_to_horizon(monkeypatch):
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_MODE", "none")
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 102, 99.5, 101, 1000],
+            [101, 104.5, 100.5, 104, 1000],  # a 4% target would exit here...
+            [104, 108, 103, 107, 1000],
+            [107, 110, 106, 109, 1000],
+            [109, 112, 108, 111, 1000],  # ...but the plan rides to +11%
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+    assert outcome["exit_reason"] == "horizon"
+    assert outcome["return_pct"] == pytest.approx(11.0)
+    assert outcome["r_multiple"] == pytest.approx(5.5)
+    assert outcome["target_mode"] == "none"
+    assert outcome["target_pct_used"] == 0.0
+
+
+def test_no_target_plan_still_stops_out(monkeypatch):
+    monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_MODE", "none")
+    bars = _bars(
+        [
+            [100, 101, 99, 100, 1000],
+            [100, 101, 97.5, 98, 1000],  # stop 98 touched
+            [98, 104, 97.9, 103, 1000],
+            [103, 106, 102, 105, 1000],
+            [105, 107, 104, 106, 1000],
+            [106, 108, 105, 107, 1000],
+        ]
+    )
+    outcome = _future_outcome(bars, 0, 5, "bullish", 100.0, risk_pct=2.0, target_pct=4.0)
+    assert outcome["exit_reason"] == "stop"
+    assert outcome["label"] == "loss"
+    assert outcome["r_multiple"] == -1.0
+    assert outcome["target_mode"] == "none"
+
+
 def test_plan_target_reads_config_defaults(monkeypatch):
     monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_MODE", "nearest_empty_space")
     monkeypatch.setattr(scanner_config, "EDGE_EXIT_TARGET_R_FLOOR", 2.0)
