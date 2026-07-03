@@ -15,8 +15,8 @@ def _bars():
 def test_research_intraday_uses_delayed_sip(monkeypatch):
     seen = {}
 
-    def fake_fetch(ticker, interval, start, end, *, feed=None, delay_minutes=0):
-        seen.update(feed=feed, delay_minutes=delay_minutes, end=end)
+    def fake_fetch(ticker, interval, start, end, *, feed=None, delay_minutes=0, adjustment="raw"):
+        seen.update(feed=feed, delay_minutes=delay_minutes, end=end, adjustment=adjustment)
         return _bars()
 
     monkeypatch.setattr(market_data, "_alpaca_enabled", lambda: True)
@@ -29,6 +29,8 @@ def test_research_intraday_uses_delayed_sip(monkeypatch):
     assert seen["feed"] == "sip"
     assert seen["delay_minutes"] == 16
     assert seen["end"] == now - pd.Timedelta(minutes=16)
+    # Splits inside the intraday window must not read as price gaps.
+    assert seen["adjustment"] == "split"
     assert result.attrs["data_feed"] == "sip"
     assert result.attrs["data_delay_minutes"] == 16
 
@@ -88,11 +90,57 @@ def test_to_ny_index_treats_naive_timestamps_as_utc():
     assert out.index[0].hour == 10  # 14:30 UTC == 10:30 NY in June
 
 
+def _daily_frame(dates):
+    idx = pd.DatetimeIndex([pd.Timestamp(d, tz="America/New_York") for d in dates])
+    df = pd.DataFrame(
+        {"Open": 10.0, "High": 11.0, "Low": 9.0, "Close": 10.5, "Volume": 1000},
+        index=idx,
+    )
+    df.attrs["data_provider"] = "alpaca"
+    return df
+
+
+def test_drop_in_progress_daily_bar_mid_session():
+    df = _daily_frame(["2026-07-01", "2026-07-02"])
+    now = pd.Timestamp("2026-07-02T14:30:00", tz="America/New_York")
+
+    out = market_data.drop_in_progress_daily_bar(df, now=now)
+
+    assert len(out) == 1
+    assert out.index[-1].date().isoformat() == "2026-07-01"
+    assert out.attrs["data_provider"] == "alpaca"
+    assert "2026-07-02" in out.attrs["dropped_in_progress_bar"]
+
+
+def test_drop_in_progress_daily_bar_keeps_completed_session():
+    df = _daily_frame(["2026-07-01", "2026-07-02"])
+    now = pd.Timestamp("2026-07-02T16:20:00", tz="America/New_York")
+
+    out = market_data.drop_in_progress_daily_bar(df, now=now)
+
+    assert len(out) == 2
+
+
+def test_drop_in_progress_daily_bar_keeps_prior_day_bar():
+    df = _daily_frame(["2026-06-30", "2026-07-01"])
+    now = pd.Timestamp("2026-07-02T10:00:00", tz="America/New_York")
+
+    out = market_data.drop_in_progress_daily_bar(df, now=now)
+
+    assert len(out) == 2
+
+
+def test_drop_in_progress_daily_bar_empty_frame():
+    out = market_data.drop_in_progress_daily_bar(pd.DataFrame())
+
+    assert out.empty
+
+
 def test_current_intraday_keeps_configured_feed(monkeypatch):
     seen = {}
 
-    def fake_fetch(ticker, interval, start, end, *, feed=None, delay_minutes=0):
-        seen.update(feed=feed, delay_minutes=delay_minutes)
+    def fake_fetch(ticker, interval, start, end, *, feed=None, delay_minutes=0, adjustment="raw"):
+        seen.update(feed=feed, delay_minutes=delay_minutes, adjustment=adjustment)
         return _bars()
 
     monkeypatch.setenv("ALPACA_FEED", "iex")
@@ -102,6 +150,6 @@ def test_current_intraday_keeps_configured_feed(monkeypatch):
 
     result = market_data.fetch_intraday_bars("TEST")
 
-    assert seen == {"feed": "iex", "delay_minutes": 0}
+    assert seen == {"feed": "iex", "delay_minutes": 0, "adjustment": "split"}
     assert result.attrs["data_feed"] == "iex"
     assert result.attrs["data_delay_minutes"] == 0

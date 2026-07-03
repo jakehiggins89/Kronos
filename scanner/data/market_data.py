@@ -270,6 +270,7 @@ def fetch_intraday_bars(
     *,
     research: bool = False,
     now: pd.Timestamp | None = None,
+    adjustment: str = "split",
 ) -> pd.DataFrame:
     provider = _provider_choice()
     if provider in {"auto", "alpaca"} and _alpaca_enabled():
@@ -281,6 +282,9 @@ def fetch_intraday_bars(
                 end -= pd.Timedelta(minutes=delay_minutes)
             start = end - pd.Timedelta(days=days + 5)
             feed = "sip" if research else (os.getenv("ALPACA_FEED", ALPACA_FEED).strip().lower() or "iex")
+            # "split" adjusts price AND volume on every timeframe, so a split
+            # inside the 60d window no longer reads as a giant gap in the
+            # synthetic sessions (and volume ratios stay comparable across it).
             result = _fetch_alpaca_bars(
                 ticker=ticker,
                 interval=interval,
@@ -288,6 +292,7 @@ def fetch_intraday_bars(
                 end=end,
                 feed=feed,
                 delay_minutes=delay_minutes,
+                adjustment=adjustment,
             )
             result.attrs.update({"data_provider": "alpaca", "data_feed": feed, "data_delay_minutes": delay_minutes})
             return result
@@ -309,7 +314,11 @@ def fetch_intraday_bars(
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis=1)
     result = _to_ny_index(data)
-    result.attrs.update({"data_provider": "yfinance", "data_feed": None, "data_delay_minutes": 0})
+    # Yahoo intraday prints are as-traded (auto_adjust is a no-op there); a
+    # split inside the window shows up as a gap the bar contract must catch.
+    result.attrs.update(
+        {"data_provider": "yfinance", "data_feed": None, "data_delay_minutes": 0, "data_adjustment": "raw"}
+    )
     return result
 
 
@@ -351,11 +360,19 @@ def fetch_daily_bars(
         interval="1d",
         prepost=False,
         auto_adjust=False,
+        # Yahoo intermittently fails to apply splits at all (yfinance#1531);
+        # repair detects and fixes unapplied splits and 100x glitches on
+        # daily bars, marking touched rows in a "Repaired?" column.
+        repair=True,
         progress=False,
         threads=False,
     )
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis=1)
+    repaired_bars = 0
+    if "Repaired?" in data.columns:
+        repaired_bars = int(data["Repaired?"].fillna(False).astype(bool).sum())
+        data = data.drop(columns=["Repaired?"])
     result = _to_ny_index(data)
     # Yahoo's unadjusted series is already split-adjusted (never truly raw);
     # stamp the actual basis so evidence provenance stays honest.
@@ -365,9 +382,38 @@ def fetch_daily_bars(
             "data_feed": None,
             "data_delay_minutes": 0,
             "data_adjustment": "split",
+            "data_repaired_bars": repaired_bars,
         }
     )
     return result
+
+
+def drop_in_progress_daily_bar(df: pd.DataFrame, *, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Remove the current session's still-forming daily bar.
+
+    Both Alpaca and yfinance include today's partial bar in daily history
+    when fetched during market hours. The scheduled research run fires
+    13:30 CT (14:30 ET), so without this the newest evidence bar every day
+    is ~60% of a session: volume reads low, the close is provisional, and
+    the freshest index records inherit both.
+    """
+    if df is None or df.empty:
+        return df
+    now_ts = pd.Timestamp.now(tz=TIMEZONE) if now is None else pd.Timestamp(now)
+    now_ts = now_ts.tz_localize(TIMEZONE) if now_ts.tzinfo is None else now_ts.tz_convert(TIMEZONE)
+    last_ts = pd.Timestamp(df.index[-1])
+    last_ts = last_ts.tz_localize(TIMEZONE) if last_ts.tzinfo is None else last_ts.tz_convert(TIMEZONE)
+    if last_ts.date() != now_ts.date():
+        return df
+    # 16:00 ET close + settle buffer. On early-close days this holds a
+    # completed bar out until 16:15; it re-enters on the next rebuild.
+    session_close = now_ts.normalize() + pd.Timedelta(hours=16)
+    if now_ts >= session_close + pd.Timedelta(minutes=15):
+        return df
+    out = df.iloc[:-1].copy()
+    out.attrs.update(df.attrs)
+    out.attrs["dropped_in_progress_bar"] = last_ts.isoformat()
+    return out
 
 
 def compute_future_timestamps(last_ts: pd.Timestamp, periods: int) -> pd.DatetimeIndex:
