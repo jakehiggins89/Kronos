@@ -3,10 +3,15 @@ import pytest
 
 from scanner.edge.calibration import (
     META_FEATURE_KEYS,
+    META_OBJECTIVES,
+    fit_model,
     fit_win_probability_model,
     predict_expected_r,
+    predict_score,
     predict_win_probability,
+    select_shippable_objective,
     walk_forward_calibration,
+    walk_forward_calibration_suite,
 )
 
 
@@ -97,7 +102,7 @@ def test_walk_forward_accepts_planted_signal():
     metrics = result["metrics"]
     assert metrics["insufficient"] is False
     assert metrics["rank_ic_r"]["ic"] > 0.07
-    assert metrics["beats_naive_brier"] is True
+    assert metrics["beats_naive"] is True
     assert result["acceptance"]["passed"] is True
     assert result["final_model"] is not None
     # Every prediction is out-of-fold and keyed for joining.
@@ -142,6 +147,67 @@ def test_predictions_are_out_of_fold_purged():
     result = walk_forward_calibration(records, purge_days=9)
     assert result["config"]["purge_days"] == 9
     assert result["n_evaluated"] > 0
+
+
+def test_expected_r_objective_learns_magnitude():
+    records = _records(n=600)
+    model = fit_model([r["features"] for r in records], [r["r_multiple"] for r in records], objective="expected_r")
+    assert model is not None
+    assert model["objective"] == "expected_r"
+    rng = np.random.default_rng(0)
+    strong_features = _features(rng, signal=3.0)
+    weak_features = _features(rng, signal=-3.0)
+    assert predict_score(model, strong_features) > predict_score(model, weak_features)
+    # expected_r's E[R] IS its score (R units, unbounded).
+    assert predict_expected_r(model, strong_features) == pytest.approx(predict_score(model, strong_features))
+
+
+def test_tail_prob_objective_needs_enough_tail_events():
+    # All outcomes far below the 2R tail threshold -> too few positive
+    # events -> the fit must refuse rather than learn from ~nothing.
+    records = _records(n=600, predictive=False, seed=5)
+    for record in records:
+        record["r_multiple"] = float(np.clip(record["r_multiple"], -1.5, 1.5))
+    model = fit_model([r["features"] for r in records], [r["r_multiple"] for r in records], objective="tail_prob")
+    assert model is None
+
+
+def test_suite_runs_every_registered_objective():
+    suite = walk_forward_calibration_suite(_records(n=900))
+    assert set(suite) == set(META_OBJECTIVES)
+    for objective, result in suite.items():
+        assert result["objective"] == objective
+        assert "acceptance" in result
+
+
+def _suite_stub(passes, ics):
+    return {
+        objective: {
+            "acceptance": {"passed": passes.get(objective, False)},
+            "metrics": {"rank_ic_r": {"ic": ics.get(objective, 0.0)}},
+            "final_model": {"objective": objective},
+        }
+        for objective in META_OBJECTIVES
+    }
+
+
+def test_two_touch_ship_rule():
+    suite = _suite_stub({"expected_r": True, "tail_prob": True}, {"expected_r": 0.09, "tail_prob": 0.12})
+
+    # Nothing shipped without a previous pass (first touch only).
+    assert select_shippable_objective(suite, {}) is None
+    # Previous pass on one objective -> that one ships.
+    assert select_shippable_objective(suite, {"expected_r": True}) == "expected_r"
+    # Both two-touched -> highest current OOF IC wins.
+    assert select_shippable_objective(suite, {"expected_r": True, "tail_prob": True}) == "tail_prob"
+    # A previous pass cannot ship a model that fails NOW.
+    assert select_shippable_objective(suite, {"p_win": True}) is None
+
+
+def test_ship_rule_requires_final_model():
+    suite = _suite_stub({"expected_r": True}, {"expected_r": 0.09})
+    suite["expected_r"]["final_model"] = None
+    assert select_shippable_objective(suite, {"expected_r": True}) is None
 
 
 @pytest.mark.parametrize("bad", [None, {}, {"feature_keys": None}])

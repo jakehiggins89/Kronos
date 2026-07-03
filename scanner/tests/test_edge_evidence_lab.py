@@ -149,12 +149,17 @@ def test_validate_and_diagnose_record_evidence(monkeypatch, tmp_path):
     assert diagnostic["index_records"] == 3
     assert "edge_score" in validation_rows
     assert "diagnose_edge" in diagnostic_rows
-    # Meta-model block is always present and fails CLOSED on tiny history.
-    assert validation["meta_model"]["acceptance"]["passed"] is False
-    assert validation["meta_model"]["metrics"]["insufficient"] is True
-    assert "predictions" not in validation["meta_model"]
-    assert "final_model" not in validation["meta_model"]
-    # Failed acceptance must not ship a live advisory model.
+    # Calibration suite block is always present; every objective fails
+    # CLOSED on tiny history and nothing ships.
+    meta_block = validation["meta_model"]
+    assert meta_block["shipped_objective"] is None
+    assert set(meta_block["objectives"]) == {"expected_r", "tail_prob", "p_win"}
+    for objective_result in meta_block["objectives"].values():
+        assert objective_result["acceptance"]["passed"] is False
+        assert objective_result["metrics"]["insufficient"] is True
+        assert "predictions" not in objective_result
+        assert "final_model" not in objective_result
+    # No two-touch pass -> no live advisory model on disk.
     from scanner import main as scanner_main
 
     assert not scanner_main.META_MODEL_PATH.exists()

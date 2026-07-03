@@ -67,9 +67,11 @@ from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
 from .edge.audit import compute_edge_audit_report
 from .edge.calibration import (
+    META_MODEL_VERSION as _META_MODEL_VERSION_CURRENT,
     predict_expected_r,
-    predict_win_probability,
-    walk_forward_calibration,
+    predict_score,
+    select_shippable_objective,
+    walk_forward_calibration_suite,
 )
 from .edge.features import extract_edge_features
 from .edge.retrieval import (
@@ -89,7 +91,7 @@ from .learning.autotuner import apply_overrides, propose_overrides
 from .learning.outcome_reviewer import review_pending_outcomes
 from .learning.outcome_store import DECISIONS_PATH, append_decision, deduplicate_decisions, load_decisions, save_decisions
 from .learning.replay_runner import run_replay_eval
-from .learning.trial_registry import record_trial
+from .learning.trial_registry import load_trials, record_trial
 from .models.kronos_adapter import KronosAdapter
 from .strategy.empty_space import score_empty_space
 from .strategy.potter_box import detect_potter_box, score_potter_research_candidate
@@ -1362,19 +1364,26 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
                 "outcome_method": record.outcome_method,
             }
         )
-    # Within-direction meta-model: expanding-window OOF evaluation over the
-    # FULL index history (far more power than the validation slice), with
-    # per-record predictions joined back onto the validation candidates.
-    # Strictly advisory - it ranks inside a direction, it never gates.
-    meta = walk_forward_calibration(records)
-    meta_predictions = meta.get("predictions", {})
-    for candidate in candidates:
-        if str(candidate.get("direction")) != meta.get("direction"):
-            continue
-        key = f"{candidate.get('ticker', '')}|{candidate.get('timestamp', '')}"
-        p_win = meta_predictions.get(key)
-        if p_win is not None:
-            candidate["p_win_meta"] = round(float(p_win), 4)
+    # Within-direction calibration frontier, self-run: every pre-registered
+    # objective is evaluated out-of-fold over the FULL index history each
+    # lab run, registered in the trial registry, and shipped as the live
+    # advisory ONLY on the two-touch rule (pass this run AND the previous
+    # registered run). Strictly advisory - it ranks inside a direction, it
+    # never gates. Nothing qualifying means take-all stays the policy.
+    suite = walk_forward_calibration_suite(records)
+    previous_passes = _previous_calibration_passes()
+    shipped_objective = select_shippable_objective(suite, previous_passes)
+
+    if shipped_objective is not None:
+        shipped_predictions = suite[shipped_objective].get("predictions", {})
+        for candidate in candidates:
+            if str(candidate.get("direction")) != suite[shipped_objective].get("direction"):
+                continue
+            key = f"{candidate.get('ticker', '')}|{candidate.get('timestamp', '')}"
+            score = shipped_predictions.get(key)
+            if score is not None:
+                candidate["meta_score_oof"] = round(float(score), 4)
+                candidate["meta_objective"] = shipped_objective
 
     if evidence_run is not None:
         evidence_run.record_rows("validation_candidates", candidates)
@@ -1385,32 +1394,39 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
         slippage_pct=0.05,
     )
     report["meta_model"] = {
-        key: value for key, value in meta.items() if key not in {"predictions", "final_model"}
+        "ship_rule": "two_touch_then_highest_oof_ic",
+        "shipped_objective": shipped_objective,
+        "previous_run_passes": previous_passes,
+        "objectives": {
+            objective: {key: value for key, value in result.items() if key not in {"predictions", "final_model"}}
+            for objective, result in suite.items()
+        },
     }
-    # The live advisory model ships ONLY on passed acceptance: annotating
-    # candidates with a ranker that failed its out-of-fold gates (or proved
-    # anti-informative, as P(win) did against this right-tail edge) would
-    # invite exactly the trade selection the evidence rejects. A stale
-    # artifact from an earlier passing run is removed for the same reason.
-    final_model = meta.get("final_model")
-    acceptance_passed = bool((meta.get("acceptance") or {}).get("passed"))
-    if final_model is not None and acceptance_passed:
-        atomic_write_json(META_MODEL_PATH, final_model)
+    # Ship or clear the live advisory artifact. A model that has not passed
+    # its acceptance twice in a row must never annotate live candidates -
+    # P(win) already proved a ranker can be actively anti-informative
+    # against this right-tail edge.
+    if shipped_objective is not None:
+        atomic_write_json(META_MODEL_PATH, suite[shipped_objective]["final_model"])
         report["meta_model"]["final_model_path"] = str(META_MODEL_PATH.resolve())
     else:
         META_MODEL_PATH.unlink(missing_ok=True)
-    record_trial(
-        "calibration_trial",
-        {
-            "direction": meta.get("direction"),
-            "model_class": meta.get("model_class"),
-            "model_version": meta.get("model_version"),
-            "config": meta.get("config"),
-            "n_evaluated": meta.get("n_evaluated"),
-            "metrics": meta.get("metrics"),
-            "acceptance": meta.get("acceptance"),
-        },
-    )
+    for objective, result in suite.items():
+        record_trial(
+            "calibration_trial",
+            {
+                "direction": result.get("direction"),
+                "objective": objective,
+                "model_class": result.get("model_class"),
+                "model_version": result.get("model_version"),
+                "config": result.get("config"),
+                "n_evaluated": result.get("n_evaluated"),
+                "metrics": result.get("metrics"),
+                "acceptance": result.get("acceptance"),
+                "previous_run_passed": bool(previous_passes.get(objective)),
+                "shipped": objective == shipped_objective,
+            },
+        )
     report["mode"] = "validate_edge"
     report["validation_method"] = "purged_walk_forward"
     report["future_analogs_allowed"] = False
@@ -1493,12 +1509,32 @@ def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None
     return result
 
 
-def _attach_meta_advisory(candidates: list[dict], logger) -> None:
-    """Attach advisory p_win_meta / expected_r_meta to live scan candidates.
+def _previous_calibration_passes() -> dict[str, bool]:
+    """Last registered acceptance verdict per objective (same model version).
 
-    Ranking and recommendations are untouched: the meta-model is a
+    This is the memory behind the two-touch ship rule: the registry is the
+    append-only ledger, so 'did this objective also pass on the previous lab
+    run' is read from recorded facts, not from a mutable state file.
+    """
+    passes: dict[str, bool] = {}
+    for row in load_trials("calibration_trial"):
+        objective = row.get("objective")
+        if not objective:
+            continue
+        if row.get("model_version") != _META_MODEL_VERSION_CURRENT:
+            continue
+        acceptance = row.get("acceptance")
+        passes[str(objective)] = bool(isinstance(acceptance, dict) and acceptance.get("passed"))
+    return passes
+
+
+def _attach_meta_advisory(candidates: list[dict], logger) -> None:
+    """Attach advisory meta_score / expected_r_meta to live scan candidates.
+
+    Ranking and recommendations are untouched: the shipped model is a
     within-direction advisory layer that must never gate or promote. It only
-    annotates candidates in its trained direction (bullish).
+    annotates candidates in its trained direction (bullish), and only a
+    model that passed its acceptance two runs straight is ever on disk.
     """
     try:
         if not META_MODEL_PATH.exists():
@@ -1515,10 +1551,11 @@ def _attach_meta_advisory(candidates: list[dict], logger) -> None:
         features = row.get("features")
         if not isinstance(features, dict):
             continue
-        p_win = predict_win_probability(model, features)
-        if p_win is None or not math.isfinite(p_win):
+        score = predict_score(model, features)
+        if score is None or not math.isfinite(score):
             continue
-        row["p_win_meta"] = round(float(p_win), 4)
+        row["meta_objective"] = model.get("objective")
+        row["meta_score"] = round(float(score), 4)
         expected_r = predict_expected_r(model, features)
         if expected_r is not None and math.isfinite(expected_r):
             row["expected_r_meta"] = round(float(expected_r), 4)

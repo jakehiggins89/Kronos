@@ -25,3 +25,28 @@ def record_trial(kind: str, payload: dict) -> None:
     except Exception:
         # The registry is telemetry; never let it break a tuning run.
         pass
+
+
+def load_trials(kind: str | None = None, limit: int | None = None) -> list[dict]:
+    """Read registered trials (newest last). Unparseable lines are skipped -
+    the registry is telemetry, and a torn tail must not break the loop that
+    reads its own history to gate self-improvement."""
+    if not TRIAL_REGISTRY_PATH.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        for line in TRIAL_REGISTRY_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict) and (kind is None or row.get("kind") == kind):
+                rows.append(row)
+    except Exception:
+        return []
+    if limit is not None and limit >= 0:
+        rows = rows[-limit:]
+    return rows
