@@ -13,6 +13,8 @@ REQUIRED_MODULES = (
     "requests",
     "dotenv",
     "yfinance",
+    # Exchange-calendar session-completeness checks in the bar contract.
+    "pandas_market_calendars",
 )
 
 RUNTIME_ARTIFACTS = (
