@@ -22,6 +22,12 @@ MIN_KRONOS_AGREEMENT = 0.65
 MIN_RR = 1.5
 MIN_EMPTY_SPACE_SCORE = 2
 EARNINGS_BLOCK_DAYS = 10
+# Yahoo forward earnings dates are estimates (the raw payload's
+# isEarningsDateEstimate flag is hidden by yfinance's calendar), with
+# documented off-by-one and estimate-window failure modes. The cushion
+# widens the block window to absorb one day of source error in either
+# direction; it does not make an unreliable source reliable.
+EARNINGS_ESTIMATE_CUSHION_DAYS = 1
 BLOCK_ON_UNKNOWN_EARNINGS = True
 BLOCK_ON_EX_DIVIDEND = False
 MIN_ATM_OPEN_INTEREST = 500

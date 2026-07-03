@@ -179,7 +179,8 @@ def _select_via_tradier(
     dates = _tradier_list(expirations_section.get("date")) if isinstance(expirations_section, dict) else []
 
     contract_type = "call" if direction == "bullish" else "put"
-    today = pd.Timestamp.now().date()
+    # Expirations are exchange (NY) dates; the machine clock is Central.
+    today = pd.Timestamp.now(tz=scanner_config.TIMEZONE).date()
     valid_exp = []
     for exp in dates:
         try:
@@ -301,7 +302,7 @@ def select_options_contract(
         if not expirations:
             return OptionsContractResult(False, None, None, None, None, None, None, None, None, None, None, None, "empty options chain")
 
-        today = pd.Timestamp.now().date()
+        today = pd.Timestamp.now(tz=scanner_config.TIMEZONE).date()
         valid_exp = []
         for exp in expirations:
             exp_dt = pd.Timestamp(exp).date()
