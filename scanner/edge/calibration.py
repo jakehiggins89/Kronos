@@ -112,10 +112,16 @@ def fit_win_probability_model(
     # Winsorize at train 1/99 percentiles, impute missing with train median,
     # then standardize - all parameters frozen into the model dict so live
     # prediction replays the exact transform.
-    lo = np.nanpercentile(raw, 1, axis=0)
-    hi = np.nanpercentile(raw, 99, axis=0)
-    medians = np.nanmedian(raw, axis=0)
+    with np.errstate(all="ignore"):
+        lo = np.nanpercentile(raw, 1, axis=0)
+        hi = np.nanpercentile(raw, 99, axis=0)
+        medians = np.nanmedian(raw, axis=0)
     medians = np.where(np.isfinite(medians), medians, 0.0)
+    # An all-NaN column (feature outage) yields NaN percentiles; clipping
+    # against NaN bounds poisons the whole standardization and, downstream,
+    # every prediction. Degrade those bounds to no-op instead.
+    lo = np.where(np.isfinite(lo), lo, medians)
+    hi = np.where(np.isfinite(hi), hi, medians)
     filled = np.where(np.isfinite(raw), raw, medians)
     clipped = np.clip(filled, lo, hi)
     mean = clipped.mean(axis=0)
@@ -140,6 +146,10 @@ def fit_win_probability_model(
         weights = weights + step
         if float(np.max(np.abs(step))) < 1e-8:
             break
+
+    if not (np.isfinite(weights).all() and np.isfinite(mean).all() and np.isfinite(std).all()):
+        # A poisoned fit must fail closed (no model), never ship NaN weights.
+        return None
 
     wins = r_values[r_values > 0.0]
     losses = r_values[r_values <= 0.0]
@@ -176,6 +186,8 @@ def predict_win_probability(model: dict, features: dict) -> float | None:
     clipped = np.clip(filled, np.array(model["winsor_low"]), np.array(model["winsor_high"]))
     x = (clipped - np.array(model["means"])) / np.array(model["stds"])
     z = float(model["intercept"]) + float(np.dot(np.array(model["coefficients"]), x))
+    if not math.isfinite(z):
+        return None
     return float(_sigmoid(np.array([z]))[0])
 
 

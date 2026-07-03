@@ -147,3 +147,25 @@ def test_predictions_are_out_of_fold_purged():
 @pytest.mark.parametrize("bad", [None, {}, {"feature_keys": None}])
 def test_predict_win_probability_rejects_malformed_model(bad):
     assert predict_win_probability(bad, {"volume_expansion": 1.0}) in (None,)
+
+
+def test_fit_survives_whole_column_feature_outage():
+    # Adversary finding: an all-NaN feature column used to poison the
+    # winsorize bounds -> NaN standardization -> NaN weights -> predictions
+    # returned NaN (not None), silently annotating live candidates. The fit
+    # must now either neutralize the dead column or fail closed - never
+    # emit non-finite parameters.
+    import math
+
+    records = _records(n=600)
+    for record in records:
+        record["features"]["volume_percentile"] = float("nan")
+    model = fit_win_probability_model(
+        [r["features"] for r in records], [r["r_multiple"] for r in records]
+    )
+    if model is not None:
+        assert all(math.isfinite(c) for c in model["coefficients"])
+        assert math.isfinite(model["intercept"])
+        rng = np.random.default_rng(1)
+        p = predict_win_probability(model, _features(rng))
+        assert p is not None and math.isfinite(p)

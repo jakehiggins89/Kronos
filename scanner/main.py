@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -1515,11 +1516,11 @@ def _attach_meta_advisory(candidates: list[dict], logger) -> None:
         if not isinstance(features, dict):
             continue
         p_win = predict_win_probability(model, features)
-        if p_win is None:
+        if p_win is None or not math.isfinite(p_win):
             continue
         row["p_win_meta"] = round(float(p_win), 4)
         expected_r = predict_expected_r(model, features)
-        if expected_r is not None:
+        if expected_r is not None and math.isfinite(expected_r):
             row["expected_r_meta"] = round(float(expected_r), 4)
 
 

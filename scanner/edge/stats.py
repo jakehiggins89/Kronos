@@ -99,7 +99,7 @@ def tercile_lift(
 
     def bucket_means(sample: list[tuple[float, float, str, str]]) -> tuple[float, float, float]:
         ordered = sorted(sample, key=lambda r: (-r[0], _tie_break_key(r[3])))
-        size = len(ordered) // 3
+        size = max(len(ordered) // 3, 1)  # guard: ordered[-0:] is the whole list
         top = [r[1] for r in ordered[:size]]
         bottom = [r[1] for r in ordered[-size:]]
         middle = [r[1] for r in ordered[size : len(ordered) - size]]
@@ -171,7 +171,7 @@ def tail_retention(scores: list[float], outcomes: list[float], row_ids: list[str
         return {"n": n, "insufficient": True}
 
     ordered = sorted(rows, key=lambda r: (-r[0], _tie_break_key(r[2])))
-    size = n // 3
+    size = max(n // 3, 1)
     top_ids = {r[2] for r in ordered[:size]}
     tail = [r for r in rows if r[1] >= tail_r]
     tail_in_top = sum(1 for r in tail if r[2] in top_ids)
