@@ -154,6 +154,10 @@ def test_validate_and_diagnose_record_evidence(monkeypatch, tmp_path):
     assert validation["meta_model"]["metrics"]["insufficient"] is True
     assert "predictions" not in validation["meta_model"]
     assert "final_model" not in validation["meta_model"]
+    # Failed acceptance must not ship a live advisory model.
+    from scanner import main as scanner_main
+
+    assert not scanner_main.META_MODEL_PATH.exists()
 
 
 def test_validate_edge_reuses_analog_index(monkeypatch, tmp_path):

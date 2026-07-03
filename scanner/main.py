@@ -1386,10 +1386,18 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     report["meta_model"] = {
         key: value for key, value in meta.items() if key not in {"predictions", "final_model"}
     }
+    # The live advisory model ships ONLY on passed acceptance: annotating
+    # candidates with a ranker that failed its out-of-fold gates (or proved
+    # anti-informative, as P(win) did against this right-tail edge) would
+    # invite exactly the trade selection the evidence rejects. A stale
+    # artifact from an earlier passing run is removed for the same reason.
     final_model = meta.get("final_model")
-    if final_model is not None:
+    acceptance_passed = bool((meta.get("acceptance") or {}).get("passed"))
+    if final_model is not None and acceptance_passed:
         atomic_write_json(META_MODEL_PATH, final_model)
         report["meta_model"]["final_model_path"] = str(META_MODEL_PATH.resolve())
+    else:
+        META_MODEL_PATH.unlink(missing_ok=True)
     record_trial(
         "calibration_trial",
         {
