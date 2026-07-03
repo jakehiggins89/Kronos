@@ -13,9 +13,18 @@ from ..config import (
     REPORT_DIR,
     TIMEZONE,
 )
+from ..data.bar_contract import check_ohlcv_contract
 from ..data.market_data import fetch_intraday_bars
 from ..data.synthetic_sessions import build_synthetic_sessions
 from ..edge.outcomes import resolve_plan_target_pct, resolve_trade_risk_pct, walk_triple_barrier
+
+# Recorded entry prices come from the decision-time session close, so on a
+# consistent price basis entry/close is ~1. The smallest corporate action the
+# split-adjusted refetch can introduce is 3:2; anything outside these bounds
+# means history was re-scaled under the decision and the outcome would be
+# walked on the wrong scale.
+ENTRY_SCALE_MIN = 0.75
+ENTRY_SCALE_MAX = 1.33
 
 
 def _evaluate_result(direction: str, entry: float, future_close: float) -> tuple[str, float]:
@@ -104,6 +113,8 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
     expired = 0
     resolved_live = 0
     resolved_counterfactual = 0
+    quarantined = 0
+    contract_blocked = 0
 
     pending = [r for r in records if r.get("outcome_status") == "pending"]
     pending = pending[:OUTCOME_REVIEW_MAX_RECORDS]
@@ -121,7 +132,19 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             if (now - created).days < OUTCOME_MIN_AGE_DAYS:
                 continue
 
-            intraday = fetch_intraday_bars(rec["ticker"])
+            # Outcomes are the ground truth the tuning loops learn from, and
+            # they resolve days after the decision - so the free 16-min-
+            # delayed SIP feed applies, and consolidated High/Low (not the
+            # ~3% IEX slice) decides whether stop/target were really touched.
+            intraday = fetch_intraday_bars(rec["ticker"], research=True)
+            if intraday is not None and not intraday.empty:
+                violations, _warnings = check_ohlcv_contract(intraday, profile="intraday")
+                if violations:
+                    # Corrupt bars must not become win/loss labels; leave the
+                    # record pending and retry on the next (cleaner) fetch.
+                    rec["outcome_error"] = f"bar contract violation: {'; '.join(violations)}"
+                    contract_blocked += 1
+                    continue
             synthetic, _ = build_synthetic_sessions(intraday, rec.get("anchor_hour", 20), rec.get("anchor_minute", 0), "30m", True)
             if synthetic.empty:
                 continue
@@ -140,6 +163,20 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
                 continue
 
             entry_price = float(rec["entry_price"])
+            decision_close = float(synthetic.iloc[start_pos]["Close"])
+            if decision_close > 0:
+                scale = entry_price / decision_close
+                if not (ENTRY_SCALE_MIN <= scale <= ENTRY_SCALE_MAX):
+                    # A split (or symbol re-scaling) between decision and
+                    # review moved the bars onto a different price basis than
+                    # the recorded entry; any barrier walk would be fiction.
+                    rec["outcome_status"] = "not_applicable"
+                    rec["outcome_error"] = (
+                        f"entry price scale mismatch (entry={entry_price:.4f}, "
+                        f"decision session close={decision_close:.4f}); likely corporate action"
+                    )
+                    quarantined += 1
+                    continue
             future_close = float(synthetic.iloc[target_pos]["Close"])
             close_label, ret5 = _evaluate_result(rec["direction"], entry_price, future_close)
 
@@ -176,6 +213,8 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
         "resolved_counterfactual": resolved_counterfactual,
         "marked_not_applicable": skipped,
         "expired_unresolvable": expired,
+        "quarantined_scale_mismatch": quarantined,
+        "blocked_by_bar_contract": contract_blocked,
     }
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     (REPORT_DIR / "outcome_review_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

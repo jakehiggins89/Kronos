@@ -319,7 +319,7 @@ def _synthetic_sessions():
 def _patch_reviewer(monkeypatch, tmp_path, synthetic):
     monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
-    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker: pd.DataFrame())
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: pd.DataFrame())
     monkeypatch.setattr(
         outcome_reviewer,
         "build_synthetic_sessions",

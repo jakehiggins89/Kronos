@@ -30,9 +30,15 @@ def test_review_pending_outcomes_anchors_after_hours_decision_to_signal_session(
         }
     ]
 
+    seen = {}
+
+    def fake_fetch(ticker, research=False):
+        seen["research"] = research
+        return pd.DataFrame()
+
     monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
-    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker: pd.DataFrame())
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", fake_fetch)
     monkeypatch.setattr(
         outcome_reviewer,
         "build_synthetic_sessions",
@@ -41,6 +47,9 @@ def test_review_pending_outcomes_anchors_after_hours_decision_to_signal_session(
 
     reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
 
+    # Outcome resolution must use the delayed consolidated (SIP) feed - IEX
+    # highs/lows systematically miss real stop/target touches.
+    assert seen["research"] is True
     assert summary["resolved_now"] == 1
     assert summary["resolved_counterfactual"] == 1
     assert reviewed[0]["outcome_status"] == "resolved"
@@ -83,7 +92,7 @@ def test_journal_outcomes_follow_shipped_no_target_geometry(monkeypatch, tmp_pat
 
     monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
-    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker: pd.DataFrame())
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: pd.DataFrame())
     monkeypatch.setattr(
         outcome_reviewer,
         "build_synthetic_sessions",
@@ -97,3 +106,74 @@ def test_journal_outcomes_follow_shipped_no_target_geometry(monkeypatch, tmp_pat
     assert reviewed[0]["outcome_target_mode"] == "none"
     assert reviewed[0]["outcome_exit_reason"] == "horizon"
     assert reviewed[0]["outcome_return_pct"] == 30.0
+
+
+def test_split_rescaled_history_quarantines_record(monkeypatch, tmp_path):
+    # A 1:10 reverse split between decision and review re-scales the fetched
+    # (split-adjusted) history; walking barriers against the old-scale entry
+    # would fabricate a catastrophic outcome. The record must be quarantined,
+    # not resolved.
+    sessions = _ohlc_sessions() * 10.0  # decision-session close now 100, entry recorded at 10
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-06-22T15:00:00-04:00",
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+
+    monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: pd.DataFrame())
+    monkeypatch.setattr(
+        outcome_reviewer,
+        "build_synthetic_sessions",
+        lambda intraday, anchor_hour, anchor_minute, source_interval, prepost_enabled: (sessions, {}),
+    )
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["resolved_now"] == 0
+    assert summary["quarantined_scale_mismatch"] == 1
+    assert reviewed[0]["outcome_status"] == "not_applicable"
+    assert "scale mismatch" in reviewed[0]["outcome_error"]
+
+
+def test_corrupt_intraday_bars_block_resolution(monkeypatch, tmp_path):
+    # NaN OHLC in the fetched bars must leave the record pending (retry on a
+    # cleaner fetch), never resolve into a label.
+    idx = pd.date_range("2026-06-22", periods=3, freq="30min", tz="America/New_York")
+    corrupt = pd.DataFrame(
+        {
+            "Open": [10.0, float("nan"), 10.2],
+            "High": [10.1, 10.4, 10.5],
+            "Low": [9.9, 10.0, 10.1],
+            "Close": [10.0, float("nan"), 10.3],
+            "Volume": [100, 100, 100],
+        },
+        index=idx,
+    )
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-06-22T15:00:00-04:00",
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+
+    monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: corrupt)
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["resolved_now"] == 0
+    assert summary["blocked_by_bar_contract"] == 1
+    assert reviewed[0]["outcome_status"] == "pending"
+    assert "bar contract violation" in reviewed[0]["outcome_error"]
