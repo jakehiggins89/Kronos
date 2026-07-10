@@ -64,6 +64,7 @@ from .data.cross_check import cross_check_daily_bars
 from .data.events import assess_event_risk
 from .data.market_data import (
     drop_in_progress_daily_bar,
+    drop_vendor_placeholder_bars,
     fetch_daily_bars,
     fetch_intraday_bars,
     validate_ticker,
@@ -1294,6 +1295,7 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
     errors: dict[str, str] = {}
     contract_warnings: dict[str, list[str]] = {}
     partial_bars_dropped: dict[str, str] = {}
+    placeholder_bars_dropped: dict[str, list[str]] = {}
     cross_checks: dict[str, dict] = {}
     for ticker in index_universe:
         try:
@@ -1302,6 +1304,15 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
             dropped_ts = daily.attrs.get("dropped_in_progress_bar")
             if dropped_ts:
                 partial_bars_dropped[ticker] = str(dropped_ts)
+            daily = drop_vendor_placeholder_bars(daily)
+            dropped_placeholders = daily.attrs.get("dropped_placeholder_bars")
+            if dropped_placeholders:
+                placeholder_bars_dropped[ticker] = list(dropped_placeholders)
+                logger.warning(
+                    "EDGE_INDEX_PLACEHOLDER_BARS_DROPPED: %s %s (halted/non-traded sessions)",
+                    ticker,
+                    dropped_placeholders,
+                )
             violations, warnings = check_ohlcv_contract(daily)
             session_violations, session_warnings, _session_stats = check_session_completeness(daily)
             violations.extend(session_violations)
@@ -1334,6 +1345,7 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
         "bars_adjustment": EDGE_BARS_ADJUSTMENT,
         "contract_warnings": contract_warnings,
         "partial_bars_dropped": partial_bars_dropped,
+        "placeholder_bars_dropped": placeholder_bars_dropped,
         "cross_source_checks": cross_checks,
         "path": str(EDGE_INDEX_PATH.resolve()),
     }

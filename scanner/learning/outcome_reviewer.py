@@ -14,7 +14,7 @@ from ..config import (
     TIMEZONE,
 )
 from ..data.bar_contract import check_ohlcv_contract
-from ..data.market_data import fetch_intraday_bars
+from ..data.market_data import drop_vendor_placeholder_bars, fetch_intraday_bars
 from ..data.synthetic_sessions import build_synthetic_sessions
 from ..edge.outcomes import resolve_plan_target_pct, resolve_trade_risk_pct, walk_triple_barrier
 
@@ -137,6 +137,11 @@ def review_pending_outcomes(records: list[dict], logger) -> tuple[list[dict], di
             # delayed SIP feed applies, and consolidated High/Low (not the
             # ~3% IEX slice) decides whether stop/target were really touched.
             intraday = fetch_intraday_bars(rec["ticker"], research=True)
+            # A halted session arrives as a zero-volume forward-filled
+            # placeholder that would block resolution forever ("retry later"
+            # never gets cleaner for a historical halt); drop it so the walk
+            # sees only real prints.
+            intraday = drop_vendor_placeholder_bars(intraday)
             if intraday is not None and not intraday.empty:
                 violations, _warnings = check_ohlcv_contract(intraday, profile="intraday")
                 if violations:

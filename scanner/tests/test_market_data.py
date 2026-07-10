@@ -136,6 +136,79 @@ def test_drop_in_progress_daily_bar_empty_frame():
     assert out.empty
 
 
+def _halted_session_frame():
+    # CLSK's 2024-11-08 Nasdaq halt as Alpaca/Yahoo deliver it: OHLC forward-
+    # filled at the prior close, zero volume, between two real sessions.
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp(d, tz="America/New_York") for d in ["2024-11-07", "2024-11-08", "2024-11-11"]]
+    )
+    df = pd.DataFrame(
+        {
+            "Open": [12.70, 13.57, 15.00],
+            "High": [13.798, 13.57, 17.87],
+            "Low": [12.65, 13.57, 14.83],
+            "Close": [13.57, 13.57, 17.61],
+            "Volume": [37698309, 0, 68159990],
+        },
+        index=idx,
+    )
+    df.attrs["data_provider"] = "alpaca"
+    return df
+
+
+def test_drop_vendor_placeholder_bars_removes_halted_session():
+    df = _halted_session_frame()
+
+    out = market_data.drop_vendor_placeholder_bars(df)
+
+    assert len(out) == 2
+    assert [ts.date().isoformat() for ts in out.index] == ["2024-11-07", "2024-11-11"]
+    assert out.attrs["data_provider"] == "alpaca"
+    assert len(out.attrs["dropped_placeholder_bars"]) == 1
+    assert "2024-11-08" in out.attrs["dropped_placeholder_bars"][0]
+
+
+def test_drop_vendor_placeholder_bars_result_passes_contract():
+    from scanner.data.bar_contract import check_ohlcv_contract
+
+    df = _halted_session_frame()
+    violations, _ = check_ohlcv_contract(df)
+    assert any("zero-volume flat" in v for v in violations)
+
+    out = market_data.drop_vendor_placeholder_bars(df)
+    violations, _ = check_ohlcv_contract(out)
+    assert violations == []
+
+
+def test_drop_vendor_placeholder_bars_keeps_zero_volume_with_range():
+    # Price range with zero volume is internally impossible - genuine
+    # corruption stays in the frame for the bar contract to hard-fail.
+    df = _halted_session_frame()
+    df.loc[df.index[1], "High"] = 13.60
+
+    out = market_data.drop_vendor_placeholder_bars(df)
+
+    assert len(out) == 3
+    assert "dropped_placeholder_bars" not in out.attrs
+
+
+def test_drop_vendor_placeholder_bars_keeps_single_print_bars():
+    # Flat OHLC with real volume is a legitimate one-print session.
+    df = _halted_session_frame()
+    df.loc[df.index[1], "Volume"] = 1200
+
+    out = market_data.drop_vendor_placeholder_bars(df)
+
+    assert len(out) == 3
+    assert "dropped_placeholder_bars" not in out.attrs
+
+
+def test_drop_vendor_placeholder_bars_empty_frame():
+    out = market_data.drop_vendor_placeholder_bars(pd.DataFrame())
+
+    assert out.empty
+
+
 def test_current_intraday_keeps_configured_feed(monkeypatch):
     seen = {}
 

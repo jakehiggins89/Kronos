@@ -416,6 +416,40 @@ def drop_in_progress_daily_bar(df: pd.DataFrame, *, now: pd.Timestamp | None = N
     return out
 
 
+def drop_vendor_placeholder_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove zero-volume flat bars vendors emit for non-traded sessions.
+
+    Alpaca and Yahoo both forward-fill a session with no prints (e.g. CLSK's
+    full-day Nasdaq halt on 2024-11-08) as Open==High==Low==Close at the
+    prior close with zero volume; Tradier omits the session entirely. No
+    trades happened, so the bar carries no market information and its
+    High/Low path is fabricated. Dropping it converts the halt into a
+    missing session, which the session-completeness check reports honestly —
+    instead of the bar contract failing the ticker for as long as the
+    placeholder stays inside the lookback window.
+    """
+    if df is None or df.empty:
+        return df
+    if not {"Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+        return df
+    volume = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+    finite = ~df[["Open", "High", "Low", "Close"]].isna().any(axis=1)
+    flat = (
+        (df["Open"] == df["High"])
+        & (df["High"] == df["Low"])
+        & (df["Low"] == df["Close"])
+    )
+    placeholder = finite & flat & (volume == 0)
+    if not placeholder.any():
+        return df
+    out = df[~placeholder].copy()
+    out.attrs.update(df.attrs)
+    out.attrs["dropped_placeholder_bars"] = [
+        pd.Timestamp(ts).isoformat() for ts in df.index[placeholder]
+    ]
+    return out
+
+
 def compute_future_timestamps(last_ts: pd.Timestamp, periods: int) -> pd.DatetimeIndex:
     base = pd.Timestamp(last_ts)
     if base.tz is None:
