@@ -44,6 +44,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from ..config import EDGE_EMBARGO_DAYS
 from .stats import spearman_rank_ic, tail_retention, tercile_lift
 
 # Scale-free setup/context features present on every historical index record
@@ -70,7 +71,7 @@ META_OBJECTIVES: tuple[str, ...] = ("expected_r", "tail_prob", "p_win")
 META_TAIL_R = 2.0
 META_L2_LAMBDA = 1.0
 META_REFIT_EVERY_DAYS = 21
-META_PURGE_DAYS = 9  # matches EDGE_EMBARGO_DAYS: outcome must be resolved
+META_PURGE_DAYS = EDGE_EMBARGO_DAYS  # outcome must be resolved before scoring
 META_MIN_TRAIN = 300
 META_MIN_CLASS_EVENTS = 25
 META_ACCEPT_MIN_IC = 0.07

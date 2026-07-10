@@ -38,6 +38,46 @@ def _one_sided_p_from_t(t: float) -> float:
     return 0.5 * (1.0 - math.erf(t / math.sqrt(2.0)))
 
 
+def _two_sided_p_from_t(t: float) -> float:
+    return min(1.0, 2.0 * _one_sided_p_from_t(abs(t)))
+
+
+def _cluster_robust_slope_t(x: np.ndarray, y: np.ndarray, clusters: list[str]) -> float | None:
+    """OLS slope t-statistic with a one-way cluster-robust covariance.
+
+    Spearman correlation is the OLS slope between standardized ranks.  This
+    sandwich estimator keeps the row-level rank relationship while allowing
+    arbitrary dependence among records sharing an entry day.  It replaces the
+    old shortcut that merely put ``n_days`` into an IID correlation formula.
+    """
+    n = len(x)
+    unique_clusters = sorted(set(clusters))
+    g = len(unique_clusters)
+    k = 2  # intercept + rank slope
+    if n <= k or g < 3:
+        return None
+
+    design = np.column_stack([np.ones(n), x])
+    xtx_inv = np.linalg.pinv(design.T @ design)
+    beta = xtx_inv @ design.T @ y
+    residuals = y - design @ beta
+
+    meat = np.zeros((k, k), dtype=float)
+    cluster_array = np.asarray(clusters, dtype=object)
+    for cluster in unique_clusters:
+        mask = cluster_array == cluster
+        score = design[mask].T @ residuals[mask]
+        meat += np.outer(score, score)
+
+    # CR1 finite-sample correction, matching common clustered-OLS defaults.
+    correction = (g / (g - 1.0)) * ((n - 1.0) / (n - k))
+    covariance = correction * (xtx_inv @ meat @ xtx_inv)
+    variance = float(covariance[1, 1])
+    if not math.isfinite(variance) or variance <= 1e-18:
+        return None
+    return float(beta[1] / math.sqrt(variance))
+
+
 def day_clustered_t(values: list[float], day_keys: list[str]) -> dict:
     """One-sample t against zero computed on per-day means.
 
@@ -188,15 +228,22 @@ def tail_retention(scores: list[float], outcomes: list[float], row_ids: list[str
 
 
 def spearman_rank_ic(scores: list[float], outcomes: list[float], day_keys: list[str] | None = None) -> dict:
-    """Spearman rank correlation of score vs outcome with a one-sided p-value.
+    """Spearman rank correlation of score vs outcome with explicit alternatives.
 
     Uses every sample, so it detects ranking skill long before any absolute
     threshold accumulates enough signals (rho >= ~0.07 is detectable at
     n=600; a threshold gate needs 20+ signals it may never produce).
 
-    When day_keys are provided, also reports a p-value computed against the
-    number of distinct entry days: overlapping 5-bar outcomes and same-day
-    cross-ticker correlation make the raw n anti-conservative.
+    The acceptance hypothesis is directional (positive rank skill), so the
+    legacy ``p_value`` fields remain one-sided with alternative ``IC > 0``.
+    Two-sided values are also returned so negative associations are not
+    mislabeled using a one-sided significance number.
+
+    When day_keys are provided, the day-clustered values use a one-way
+    cluster-robust sandwich covariance on the rank regression.  This handles
+    arbitrary same-entry-day dependence.  It does not handle dependence across
+    adjacent entry days caused by overlapping multi-day outcomes; callers
+    making confirmatory claims should additionally use time-block inference.
     """
     pairs = []
     pair_days = []
@@ -224,15 +271,31 @@ def spearman_rank_ic(scores: list[float], outcomes: list[float], day_keys: list[
         return {"ic": 0.0, "p_value": 1.0, "n": n}
     bounded = min(max(ic, -0.999999), 0.999999)
     t = bounded * math.sqrt((n - 2) / (1.0 - bounded * bounded))
-    result = {"ic": round(ic, 4), "p_value": round(_one_sided_p_from_t(t), 6), "n": n}
+    result = {
+        "ic": round(ic, 4),
+        "p_value": round(_one_sided_p_from_t(t), 6),
+        "p_value_two_sided": round(_two_sided_p_from_t(t), 6),
+        "p_value_alternative": "greater",
+        "n": n,
+    }
 
     if day_keys is not None:
         n_days = len({d for d in pair_days if d})
         result["n_days"] = n_days
-        if n_days >= 3:
-            n_eff = min(n, n_days)
-            t_eff = bounded * math.sqrt((n_eff - 2) / (1.0 - bounded * bounded))
-            result["p_value_day_clustered"] = round(_one_sided_p_from_t(t_eff), 6)
+        if n_days >= 3 and len(pair_days) == n:
+            x = score_ranks.to_numpy(dtype=float)
+            y = outcome_ranks.to_numpy(dtype=float)
+            t_clustered = _cluster_robust_slope_t(x, y, pair_days)
+            if t_clustered is not None:
+                result["p_value_day_clustered"] = round(_one_sided_p_from_t(t_clustered), 6)
+                result["p_value_day_clustered_two_sided"] = round(_two_sided_p_from_t(t_clustered), 6)
+                result["day_cluster_method"] = "one_way_entry_day_cluster_robust_cr1"
+            else:
+                result["p_value_day_clustered"] = 1.0
+                result["p_value_day_clustered_two_sided"] = 1.0
+                result["day_cluster_method"] = "unavailable"
         else:
             result["p_value_day_clustered"] = 1.0
+            result["p_value_day_clustered_two_sided"] = 1.0
+            result["day_cluster_method"] = "unavailable"
     return result

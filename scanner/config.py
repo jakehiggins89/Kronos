@@ -100,12 +100,13 @@ AUTOTUNE_EMPTY_SPACE_STEP = 1
 EDGE_ANALOG_K = 7
 # Purge window: an analog's outcome must be RESOLVED before the query bar or
 # its realized R leaks future market moves into the query's score. Outcomes
-# span PRED_DAYS=5 trading bars (7 calendar days, 8-9 across a holiday), so
-# both embargoes must cover at least 9 calendar days. The old values (5
-# same-ticker / 1 cross-ticker) admitted analogs whose outcome windows
-# overlapped the query's own future - inflating apparent walk-forward skill
-# with concurrent-week correlation.
-EDGE_EMBARGO_DAYS = 9
+# span PRED_DAYS=5 trading bars (7 calendar days, 8-9 across a normal
+# holiday, and up to ~10 across holiday-extended long weekends), so both
+# embargoes must cover at least 11 calendar days. The old values (5
+# same-ticker / 1 cross-ticker, then 9/9) admitted edge cases whose outcome
+# windows could overlap the query's own future - inflating apparent
+# walk-forward skill with concurrent-week correlation.
+EDGE_EMBARGO_DAYS = 11
 EDGE_MIN_ANALOGS = 3
 # Analogs must share the query's breakout direction; a bullish setup should
 # not borrow expectancy from bearish history.
@@ -113,7 +114,7 @@ EDGE_ANALOG_DIRECTION_MATCH = True
 # During validation, block analogs from any ticker within this many days of
 # the query so same-week market-wide moves (and unresolved analog outcomes)
 # cannot inflate apparent skill.
-EDGE_CROSS_TICKER_EMBARGO_DAYS = 9
+EDGE_CROSS_TICKER_EMBARGO_DAYS = 11
 EDGE_VALIDATION_MAX_RECORDS = 1500
 EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
 EDGE_VALIDATION_TOP_K = 25

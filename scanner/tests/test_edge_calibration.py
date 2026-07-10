@@ -4,6 +4,7 @@ import pytest
 from scanner.edge.calibration import (
     META_FEATURE_KEYS,
     META_OBJECTIVES,
+    META_PURGE_DAYS,
     fit_model,
     fit_win_probability_model,
     predict_expected_r,
@@ -13,6 +14,7 @@ from scanner.edge.calibration import (
     walk_forward_calibration,
     walk_forward_calibration_suite,
 )
+from scanner.config import EDGE_EMBARGO_DAYS
 
 
 def _features(rng, signal=0.0):
@@ -144,8 +146,9 @@ def test_predictions_are_out_of_fold_purged():
     # before a prediction and confirm it cannot flip that prediction via
     # training leakage. Structural proxy: training cutoff respects purge.
     records = _records(n=700)
-    result = walk_forward_calibration(records, purge_days=9)
-    assert result["config"]["purge_days"] == 9
+    result = walk_forward_calibration(records)
+    assert META_PURGE_DAYS == EDGE_EMBARGO_DAYS == 11
+    assert result["config"]["purge_days"] == 11
     assert result["n_evaluated"] > 0
 
 

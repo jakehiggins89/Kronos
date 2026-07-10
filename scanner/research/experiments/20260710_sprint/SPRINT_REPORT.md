@@ -53,3 +53,7 @@ An adversarial agent independently reproduced every anchor number with the repo'
 2. **Kronos backfill** (task chip filed) — the only untested feature family, and the point of the fork.
 3. **Stop iterating loss functions on the current linear model + 10 features.** E1 closed that door: four purpose-built robust losses land where expected_r did. The remaining ranking threads, in value order: (a) Kronos-forecast backfill (new information, not a new loss), (b) tail_prob/compact5 with explicit class-imbalance handling, (c) nonlinear interactions — only after (a).
 4. Directions unchanged: take-all-bullish, bearish blocked, live alerting stays gated by the readiness audit.
+
+## Post-sprint production follow-up
+
+Evening 2026-07-10: the purge-window production finding above was converted into a protocol hardening patch. Production edge analog embargo, cross-ticker embargo, and the nightly calibration purge now all use 11 calendar days, with regression coverage for the 10-day holiday-long-weekend boundary. This does not change the pre-registered sprint results above; it tightens future validation runs.

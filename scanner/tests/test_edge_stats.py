@@ -33,6 +33,42 @@ def test_spearman_day_clustered_p_is_more_conservative():
     assert result["n"] == 120
     assert result["n_days"] == 20
     assert result["p_value_day_clustered"] >= result["p_value"]
+    assert result["day_cluster_method"] == "one_way_entry_day_cluster_robust_cr1"
+    assert result["p_value_alternative"] == "greater"
+
+
+def test_spearman_clustered_p_uses_within_day_dependence_not_just_day_count():
+    # Both datasets have the same n, n_days and global IC. In the first, each
+    # day's observations move together; in the second, dependence is dispersed.
+    # A real sandwich estimator can distinguish them, unlike the old n_days
+    # substitution shortcut.
+    rng = np.random.default_rng(41)
+    n_days = 30
+    per_day = 8
+    day_signal = rng.normal(size=n_days)
+    scores_clustered = np.repeat(day_signal, per_day) + rng.normal(scale=0.8, size=n_days * per_day)
+    outcomes_clustered = 0.1 * np.repeat(day_signal, per_day) + rng.normal(scale=1.0, size=n_days * per_day)
+    days = [f"d{i}" for i in range(n_days) for _ in range(per_day)]
+
+    clustered = spearman_rank_ic(list(scores_clustered), list(outcomes_clustered), day_keys=days)
+    shuffled = spearman_rank_ic(
+        list(scores_clustered),
+        list(outcomes_clustered),
+        day_keys=list(np.asarray(days)[rng.permutation(len(days))]),
+    )
+
+    assert clustered["n_days"] == shuffled["n_days"] == n_days
+    assert clustered["p_value_day_clustered"] != shuffled["p_value_day_clustered"]
+
+
+def test_spearman_reports_two_sided_p_for_negative_association():
+    scores = list(range(60))
+    outcomes = list(reversed(scores))
+    days = [f"d{i // 3}" for i in range(60)]
+    result = spearman_rank_ic(scores, outcomes, day_keys=days)
+
+    assert result["p_value"] > 0.99  # one-sided alternative is positive IC
+    assert result["p_value_two_sided"] < 0.001
 
 
 def test_tercile_lift_detects_real_spread():

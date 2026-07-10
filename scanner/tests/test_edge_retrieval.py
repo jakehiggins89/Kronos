@@ -1,4 +1,5 @@
 from scanner.edge.retrieval import EdgeAnalogIndex, EdgeRecord, find_analogs
+from scanner.config import EDGE_CROSS_TICKER_EMBARGO_DAYS, EDGE_EMBARGO_DAYS
 
 
 def test_find_analogs_ranks_nearest_numeric_features():
@@ -71,6 +72,83 @@ def test_find_analogs_excludes_same_ticker_inside_embargo():
     analogs = find_analogs(query, [leaked, allowed], k=5, embargo_days=5)
 
     assert [a["timestamp"] for a in analogs] == ["2026-01-01T00:00:00-05:00"]
+
+
+def test_default_embargo_excludes_holiday_extended_outcome_windows():
+    query = {
+        "ticker": "AAA",
+        "timestamp": "2026-07-13T00:00:00-04:00",
+        "breakout_distance_pct": 2.0,
+        "volume_expansion": 1.5,
+    }
+    still_resolving = EdgeRecord(
+        ticker="AAA",
+        timestamp="2026-07-03T00:00:00-04:00",
+        direction="bullish",
+        features={"breakout_distance_pct": 2.0, "volume_expansion": 1.5},
+        outcome_return_pct=4.0,
+        outcome_label="win",
+        r_multiple=1.5,
+        mae_pct=-0.5,
+        mfe_pct=4.5,
+    )
+    resolved = EdgeRecord(
+        ticker="AAA",
+        timestamp="2026-07-02T00:00:00-04:00",
+        direction="bullish",
+        features={"breakout_distance_pct": 2.1, "volume_expansion": 1.4},
+        outcome_return_pct=-1.0,
+        outcome_label="loss",
+        r_multiple=-0.4,
+        mae_pct=-2.0,
+        mfe_pct=1.0,
+    )
+
+    analogs = find_analogs(query, [still_resolving, resolved], k=5, embargo_days=EDGE_EMBARGO_DAYS)
+
+    assert EDGE_EMBARGO_DAYS == 11
+    assert [a["timestamp"] for a in analogs] == ["2026-07-02T00:00:00-04:00"]
+
+
+def test_default_cross_ticker_embargo_excludes_same_week_market_leakage():
+    query = {
+        "ticker": "AAA",
+        "timestamp": "2026-07-13T00:00:00-04:00",
+        "breakout_distance_pct": 2.0,
+        "volume_expansion": 1.5,
+    }
+    still_resolving = EdgeRecord(
+        ticker="BBB",
+        timestamp="2026-07-03T00:00:00-04:00",
+        direction="bullish",
+        features={"breakout_distance_pct": 2.0, "volume_expansion": 1.5},
+        outcome_return_pct=4.0,
+        outcome_label="win",
+        r_multiple=1.5,
+        mae_pct=-0.5,
+        mfe_pct=4.5,
+    )
+    resolved = EdgeRecord(
+        ticker="CCC",
+        timestamp="2026-07-02T00:00:00-04:00",
+        direction="bullish",
+        features={"breakout_distance_pct": 2.1, "volume_expansion": 1.4},
+        outcome_return_pct=-1.0,
+        outcome_label="loss",
+        r_multiple=-0.4,
+        mae_pct=-2.0,
+        mfe_pct=1.0,
+    )
+
+    analogs = EdgeAnalogIndex([still_resolving, resolved]).find_analogs(
+        query,
+        k=5,
+        embargo_days=EDGE_EMBARGO_DAYS,
+        cross_ticker_embargo_days=EDGE_CROSS_TICKER_EMBARGO_DAYS,
+    )
+
+    assert EDGE_CROSS_TICKER_EMBARGO_DAYS == 11
+    assert [a["timestamp"] for a in analogs] == ["2026-07-02T00:00:00-04:00"]
 
 
 def test_edge_analog_index_matches_find_analogs_and_embargo():
