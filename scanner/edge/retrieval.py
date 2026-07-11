@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, fields
 import json
 import math
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,11 @@ from ..edge.outcomes import resolve_plan_target_pct, resolve_trade_risk_pct, wal
 from ..strategy.empty_space import score_empty_space
 from ..strategy.potter_box import detect_potter_box, score_potter_research_candidate
 from ..strategy.potter_doctrine import score_potter_doctrine_v2
+
+if TYPE_CHECKING:
+    # Import-for-typing only: keeps retrieval.py free of the model-loading
+    # adapter at runtime when the historical build doesn't opt into Kronos.
+    from ..models.kronos_adapter import KronosAdapter
 
 
 @dataclass
@@ -182,7 +187,29 @@ def build_edge_records_from_bars(
     bars: pd.DataFrame,
     horizon: int = 5,
     min_history: int = 35,
+    kronos: "KronosAdapter | None" = None,
+    kronos_direction_filter: str | None = None,
 ) -> list[EdgeRecord]:
+    """Rebuild the walk-forward edge index from a ticker's daily bars.
+
+    ``kronos`` is opt-in and off by default (``None``), so the default call
+    path is byte-identical to the pre-Kronos behavior: no adapter, no model
+    load, no ``kronos_*`` fields populated. When an adapter is supplied, each
+    decision window is evaluated through it the same way the live pipeline
+    does (``kronos.evaluate(ticker, window, direction)``), and the result is
+    handed to ``extract_edge_features`` unprefixed, exactly like
+    ``KronosAdapter.evaluate``'s live callers already do.
+
+    ``kronos_direction_filter`` (default ``None``) restricts which decision
+    windows are actually forwarded to the adapter. ``None`` preserves today's
+    behavior: every built record with a Kronos adapter present is evaluated.
+    Set it to e.g. ``"bullish"`` and only windows whose ``direction`` matches
+    are evaluated; every other record is still created identically, just with
+    ``kr=None`` (same as "Kronos never consulted"). This is a pure
+    cost-control lever - the records it skips are exactly the ones a
+    bullish-only ranking test would never read - and it changes nothing about
+    the records it does evaluate. It has no effect when ``kronos is None``.
+    """
     if bars is None or len(bars) <= min_history + horizon:
         return []
     clean = bars.sort_index().copy()
@@ -203,7 +230,34 @@ def build_edge_records_from_bars(
             continue
         es = score_empty_space(window, direction, entry, pb.cost_basis or entry)
         doctrine = score_potter_doctrine_v2(ticker, window, pb, es)
-        features = extract_edge_features(ticker, window, pb, es, doctrine_v2=doctrine)
+
+        kr = None
+        if kronos is not None and (kronos_direction_filter is None or direction == kronos_direction_filter):
+            # Leakage invariant: Kronos may only ever see bars at or before
+            # the decision timestamp. `window` is already a `.iloc[:idx+1]`
+            # prefix of `clean`, but this guard makes that a hard, checked
+            # property rather than an implicit one a future refactor could
+            # silently break (a leak here manufactures a false edge).
+            decision_ts = pd.Timestamp(clean.index[idx])
+            window_max_ts = pd.Timestamp(window.index.max())
+            if window_max_ts > decision_ts:
+                raise RuntimeError(
+                    f"kronos leakage guard tripped for {ticker} idx={idx}: "
+                    f"window max timestamp {window_max_ts} is after decision "
+                    f"timestamp {decision_ts}"
+                )
+            kr_result = kronos.evaluate(ticker, window, direction)
+            # Same handling as the live research path (_kronos_research_fields
+            # in main.py): a None directional_agreement means Kronos failed to
+            # load or infer, not that it disagreed. Passing that result through
+            # would make extract_edge_features' `if kr else None` guard see a
+            # truthy-but-empty dict and silently default to 0.0, which reads
+            # downstream as "maximum disagreement" - a fabricated signal. Leave
+            # kr as None (same as "Kronos never consulted") on that path.
+            if kr_result.directional_agreement is not None:
+                kr = kr_result
+
+        features = extract_edge_features(ticker, window, pb, es, doctrine_v2=doctrine, kronos=kr)
         features["direction"] = direction
         features["research_score"] = _finite_float(research.get("score"))
         features["research_passed"] = 1.0 if research.get("passed") else 0.0
