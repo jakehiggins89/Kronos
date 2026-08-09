@@ -35,6 +35,46 @@ def test_score_edge_candidate_promotes_positive_analog_expectancy():
     assert result["analog_summary"]["count"] == 3
 
 
+def test_kronos_advisory_evidence_cannot_change_edge_score_or_promotion():
+    features = {
+        "potter_passed": 1.0,
+        "research_score": 55.0,
+        "rr_ratio": 1.0,
+        "empty_space_score": 1.0,
+        "data_quality_score": 1.0,
+        "feed_confidence": 0.9,
+        "options_spread_pct": 0.06,
+        "options_data_quality": 0.9,
+    }
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 1.0, "r_multiple": 0.2, "mae_pct": -0.5, "mfe_pct": 1.0}
+        for _ in range(3)
+    ]
+    disagreement = score_edge_candidate(
+        {
+            **features,
+            "kronos_directional_agreement": 0.0,
+            "kronos_median_forecast_return_pct": -5.0,
+        },
+        analogs,
+        min_analogs=3,
+    )
+    agreement = score_edge_candidate(
+        {
+            **features,
+            "kronos_directional_agreement": 1.0,
+            "kronos_median_forecast_return_pct": 5.0,
+        },
+        analogs,
+        min_analogs=3,
+    )
+
+    assert disagreement["scorecard"]["kronos"] == 0.0
+    assert agreement["scorecard"]["kronos"] == 0.0
+    assert disagreement["edge_score"] == agreement["edge_score"]
+    assert disagreement["recommendation"] == agreement["recommendation"]
+
+
 def test_score_edge_candidate_rejects_negative_expectancy():
     analogs = [
         {"outcome_label": "loss", "outcome_return_pct": -3.0, "r_multiple": -1.2, "mae_pct": -4.0, "mfe_pct": 0.5},
@@ -82,6 +122,29 @@ def test_score_edge_candidate_rejects_when_core_setup_gates_fail():
     assert result["scorecard"]["setup_gate"] < 0
 
 
+def test_score_edge_candidate_does_not_infer_setup_pass_from_subthreshold_empty_space():
+    features = _features()
+    features["potter_passed"] = 0.0
+    features["empty_space_passed"] = 0.0
+    features["empty_space_score"] = config.MIN_EMPTY_SPACE_SCORE - 1
+    features["rr_ratio"] = config.MIN_RR - 0.1
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 12.0, "r_multiple": 3.0, "mae_pct": -0.6, "mfe_pct": 14.0},
+        {"outcome_label": "win", "outcome_return_pct": 9.0, "r_multiple": 2.4, "mae_pct": -0.8, "mfe_pct": 10.0},
+        {"outcome_label": "win", "outcome_return_pct": 8.0, "r_multiple": 2.1, "mae_pct": -1.0, "mfe_pct": 9.0},
+    ]
+
+    explicit_result = score_edge_candidate(features, analogs, min_analogs=3)
+    legacy_features = dict(features)
+    legacy_features.pop("empty_space_passed")
+    legacy_result = score_edge_candidate(legacy_features, analogs, min_analogs=3)
+
+    for result in (explicit_result, legacy_result):
+        assert result["edge_score"] < 45
+        assert result["recommendation"] == "reject"
+        assert "setup_gate_failed" in result["blocking_reasons"]
+
+
 def test_score_edge_candidate_explains_reject_reasons():
     features = _features()
     features["potter_passed"] = 0.0
@@ -120,6 +183,47 @@ def test_score_edge_candidate_does_not_promote_indicative_options():
     result = score_edge_candidate(features, analogs, min_analogs=3)
 
     assert result["recommendation"] != "promote"
+
+
+def test_score_edge_candidate_does_not_promote_spread_above_current_limit(monkeypatch):
+    features = _features()
+    features["options_spread_pct"] = 0.10
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+    ]
+    monkeypatch.setattr(config, "MAX_ATM_BID_ASK_SPREAD_PCT", 0.08)
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["recommendation"] != "promote"
+    assert "wide_options_spread" in result["blocking_reasons"]
+
+
+def test_score_edge_candidate_labels_no_liquid_contract_without_false_data_faults():
+    features = _features()
+    features.update(
+        {
+            "options_passed": 0.0,
+            "options_data_provider": "tradier",
+            "options_data_feed": "opra-consolidated",
+            "options_spread_pct": 1.0,
+            "options_data_quality": 0.45,
+        }
+    )
+    analogs = [
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+    ]
+
+    result = score_edge_candidate(features, analogs, min_analogs=3)
+
+    assert result["recommendation"] != "promote"
+    assert "options_no_liquid_contract" in result["blocking_reasons"]
+    assert "wide_options_spread" not in result["blocking_reasons"]
+    assert "options_data_not_execution_grade" not in result["blocking_reasons"]
 
 
 def test_score_edge_candidate_uses_doctrine_v2_without_bypassing_quality_gates():

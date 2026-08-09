@@ -119,6 +119,20 @@ EDGE_VALIDATION_MAX_RECORDS = 1500
 EDGE_VALIDATION_THRESHOLDS = (45, 55, 65)
 EDGE_VALIDATION_TOP_K = 25
 
+# Round-trip transaction cost charged against every outcome BEFORE any gate
+# metric is computed. `walk_triple_barrier` stores outcomes gross - it never
+# charges a cost - so rank IC, average R, Wilson-LB precision and the HAC
+# t-stats were all measuring an edge that no execution could actually capture.
+# A gate that reads 0 bps can only ever be too permissive, which is the one
+# direction a fail-closed scanner must not fail in.
+#
+# 25 bps/side is the pre-registered basis from the 2026-07-10 sprint
+# (research/experiments/20260710_sprint/e4_decision), which is where the
+# bullish cohort's expectancy died. It is the honest floor for this universe:
+# sub-$20 small caps (CHPT, LUNR, SOUN, LYFT) traded through option chains
+# that frequently fail the liquidity filters outright.
+EDGE_COST_BPS_PER_SIDE = float(os.getenv("KRONOS_COST_BPS_PER_SIDE", "25"))
+
 # Exit geometry for the lab's encoded trade plan. The stop side stays the
 # empty-space risk (ATR/2% fallback); these choose the TARGET. Env overrides
 # let a sweep flip variants per process without code edits; the committed

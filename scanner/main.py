@@ -38,6 +38,7 @@ from .config import (
     EDGE_ANALOG_K,
     EDGE_AUDIT_REPORT_PATH,
     EDGE_BARS_ADJUSTMENT,
+    EDGE_COST_BPS_PER_SIDE,
     EDGE_CROSS_TICKER_EMBARGO_DAYS,
     EDGE_DIAGNOSTIC_REPORT_PATH,
     EDGE_EMBARGO_DAYS,
@@ -72,7 +73,7 @@ from .data.market_data import (
 from .data.options_data import select_options_contract
 from .doctor import run_doctor
 from .data.synthetic_sessions import build_synthetic_sessions
-from .edge.audit import compute_edge_audit_report
+from .edge.audit import candidate_execution_ready, compute_edge_audit_report
 from .edge.calibration import (
     META_MODEL_VERSION as _META_MODEL_VERSION_CURRENT,
     predict_expected_r,
@@ -234,6 +235,7 @@ def _load_env() -> dict:
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         "heartbeat_enabled": os.getenv("HEARTBEAT_ENABLED", "false").lower() == "true",
         "live_mode_enabled": os.getenv("LIVE_MODE_ENABLED", "false").lower() == "true",
+        "kronos_live_gate_enabled": os.getenv("KRONOS_LIVE_GATE_ENABLED", "false").lower() == "true",
         "alpaca_key": os.getenv("ALPACA_API_KEY", "").strip(),
         "alpaca_secret": os.getenv("ALPACA_SECRET_KEY", "").strip(),
         "market_data_provider": os.getenv("MARKET_DATA_PROVIDER", "auto").strip().lower(),
@@ -248,11 +250,21 @@ def _log_skip(logger, ticker: str, reason: str):
 
 def _data_provenance(bars: pd.DataFrame | None) -> dict:
     attrs = getattr(bars, "attrs", {}) if bars is not None else {}
-    return {
+    latest_source_ts = attrs.get("latest_source_timestamp")
+    if not latest_source_ts and bars is not None and not bars.empty:
+        latest_source_ts = pd.Timestamp(bars.index[-1]).isoformat()
+    payload = {
         "data_provider": attrs.get("data_provider"),
         "data_feed": attrs.get("data_feed"),
         "data_delay_minutes": int(attrs.get("data_delay_minutes", 0) or 0),
     }
+    if latest_source_ts:
+        payload["latest_source_timestamp"] = str(latest_source_ts)
+        try:
+            payload["source_session_date"] = pd.Timestamp(latest_source_ts).date().isoformat()
+        except Exception:
+            pass
+    return payload
 
 
 def _doctrine_record_fields(doctrine: dict | None) -> dict:
@@ -264,6 +276,18 @@ def _doctrine_record_fields(doctrine: dict | None) -> dict:
         "doctrine_v2_cost_basis_state": doctrine.get("cost_basis_state"),
         "doctrine_v2_risk_flags": doctrine.get("risk_flags", []),
         "doctrine_v2_diagnostics": doctrine,
+    }
+
+
+def _kronos_result_fields(result) -> dict:
+    """Keep usable Kronos evidence without turning inference failures into disagreement."""
+    if result.directional_agreement is None:
+        return {"kronos_eval_error": str(result.skip_reason or "Kronos forecast unavailable")}
+    return {
+        "kronos_directional_agreement": result.directional_agreement,
+        "kronos_median_forecast_return_pct": result.median_forecast_return_pct,
+        "kronos_worst_sampled_return_pct": result.worst_sampled_return_pct,
+        "kronos_passed": bool(result.passed),
     }
 
 
@@ -286,13 +310,7 @@ def _kronos_research_fields(kronos: KronosAdapter, ticker: str, synthetic: pd.Da
         # error string keeps a persistent model failure visible in the
         # journal instead of looking like normal early accumulation.
         logger.warning("KRONOS_RESEARCH_EVAL_FAILED: %s %s", ticker, kr.skip_reason)
-        return {"kronos_eval_error": str(kr.skip_reason)}
-    return {
-        "kronos_directional_agreement": kr.directional_agreement,
-        "kronos_median_forecast_return_pct": kr.median_forecast_return_pct,
-        "kronos_worst_sampled_return_pct": kr.worst_sampled_return_pct,
-        "kronos_passed": bool(kr.passed),
-    }
+    return _kronos_result_fields(kr)
 
 
 def _infer_direction_for_counterfactual(pb) -> str | None:
@@ -475,12 +493,15 @@ def _preflight_checks(mode: str, env: dict, logger) -> bool:
             return False
         # A stale audit must not authorize live mode: readiness reflects the
         # evidence as of the last lab run, and the edge can degrade between
-        # runs. 24h covers the daily research_ops cadence with slack.
+        # runs. 24h covers the daily research_ops cadence with slack. The file
+        # age is only a first check; audit_edge can legitimately rewrite a
+        # report from older source artifacts, so their intrinsic timestamps
+        # are checked below as well.
         audit_age_hours = (
             pd.Timestamp.now(tz="UTC")
             - pd.Timestamp(EDGE_AUDIT_REPORT_PATH.stat().st_mtime, unit="s", tz="UTC")
         ).total_seconds() / 3600.0
-        if audit_age_hours > 24.0:
+        if audit_age_hours < -(5.0 / 60.0) or audit_age_hours > 24.0:
             logger.error(
                 "Preflight failed: edge audit is %.1f hours old (max 24). "
                 "Run --mode run_edge_lab for a current readiness verdict.",
@@ -496,6 +517,76 @@ def _preflight_checks(mode: str, env: dict, logger) -> bool:
                 audit.get("warnings", []),
             )
             return False
+        provenance = audit.get("evidence_provenance")
+        if not isinstance(provenance, dict):
+            logger.error(
+                "Preflight failed: edge audit lacks intrinsic evidence provenance. "
+                "Run --mode run_edge_lab; rewriting audit_edge alone is not sufficient."
+            )
+            return False
+        scan_run_id = str(provenance.get("scan_run_id") or "").strip()
+        validation_run_id = str(provenance.get("validation_run_id") or "").strip()
+        if not scan_run_id or scan_run_id != validation_run_id:
+            logger.error(
+                "Preflight failed: scan and validation do not come from the same evidence-lab run. "
+                "scan_run_id=%s validation_run_id=%s",
+                scan_run_id or "missing",
+                validation_run_id or "missing",
+            )
+            return False
+        now_utc = pd.Timestamp.now(tz="UTC")
+        for source_name in ("scan", "validation"):
+            field = f"{source_name}_completed_at"
+            try:
+                completed_at = pd.Timestamp(provenance.get(field))
+                if pd.isna(completed_at):
+                    raise ValueError("timestamp is NaT")
+                if completed_at.tzinfo is None:
+                    completed_at = completed_at.tz_localize("UTC")
+                else:
+                    completed_at = completed_at.tz_convert("UTC")
+            except Exception:
+                logger.error(
+                    "Preflight failed: edge audit has no valid %s evidence timestamp. "
+                    "Run --mode run_edge_lab.",
+                    source_name,
+                )
+                return False
+            evidence_age_hours = (now_utc - completed_at).total_seconds() / 3600.0
+            if evidence_age_hours < -(5.0 / 60.0) or evidence_age_hours > 24.0:
+                logger.error(
+                    "Preflight failed: %s evidence is %.1f hours old (max 24). "
+                    "Run --mode run_edge_lab for current evidence.",
+                    source_name,
+                    evidence_age_hours,
+                )
+                return False
+        summary = audit.get("summary")
+        summary = summary if isinstance(summary, dict) else {}
+        direction_values = summary.get("promotable_directions", [])
+        direction_values = direction_values if isinstance(direction_values, (list, tuple, set)) else []
+        promotable_directions = tuple(
+            direction
+            for direction in direction_values
+            if direction in {"bullish", "bearish"}
+        )
+        candidate_values = summary.get("execution_ready_promoted_candidates", [])
+        candidate_values = candidate_values if isinstance(candidate_values, (list, tuple, set)) else []
+        execution_ready_candidates = [
+            str(ticker).strip().upper()
+            for ticker in candidate_values
+            if str(ticker).strip()
+        ]
+        if not promotable_directions or not execution_ready_candidates:
+            logger.error(
+                "Preflight failed: paper-trade audit lacks a promotable direction or an "
+                "execution-ready promoted candidate. Run --mode run_edge_lab."
+            )
+            return False
+        # The live candidate is rescored from its fresh bars/options immediately
+        # before alerting. Carry only the validation-supported directions out of
+        # preflight; the stale audit candidate itself is not blindly reused.
+        env["_live_promotable_directions"] = promotable_directions
     if mode == "test_minimax" and not env["minimax_api_key"]:
         logger.error("Preflight failed: MINIMAX_API_KEY missing for test_minimax mode.")
         return False
@@ -532,6 +623,86 @@ def run_minimax_test(env: dict, logger, custom_message: str | None = None) -> bo
     result = adapter.score_setup(payload)
     logger.info("MINIMAX_TEST_RESULT: %s", json.dumps(result))
     return result.get("status", "").startswith("ok")
+
+
+def _authorize_live_candidate(
+    ticker: str,
+    direction: str,
+    synthetic: pd.DataFrame,
+    options_contract,
+    env: dict,
+    logger,
+) -> dict:
+    """Fail closed unless this exact, freshly scanned setup earns promotion.
+
+    The readiness audit proves the global validation route and records which
+    directions are statistically promotable. It cannot authorize a different
+    live alert merely because some candidate in the earlier Edge scan passed.
+    Re-score the current bars with the current options contract, then require
+    Edge promotion, direction support, and capital-grade execution evidence.
+    """
+    direction_values = env.get("_live_promotable_directions", ())
+    direction_values = direction_values if isinstance(direction_values, (list, tuple, set)) else ()
+    promotable_directions = {
+        str(value).strip().lower()
+        for value in direction_values
+        if str(value).strip()
+    }
+    if direction not in promotable_directions:
+        return {
+            "authorized": False,
+            "reason": "edge_direction_not_promotable",
+            "edge_score": None,
+            "edge_recommendation": None,
+            "blocking_reasons": ["direction_evidence_unsupported"],
+        }
+
+    try:
+        records = load_edge_index(EDGE_INDEX_PATH)
+        if not records:
+            raise ValueError("edge retrieval index is empty")
+        scored = _score_edge_for_bars(
+            ticker,
+            synthetic,
+            records,
+            logger,
+            options_selector=lambda *_args, **_kwargs: options_contract,
+        )
+    except Exception as exc:
+        logger.error("LIVE_EDGE_AUTHORIZATION_ERROR: %s %s", ticker, exc)
+        return {
+            "authorized": False,
+            "reason": "edge_authorization_unavailable",
+            "edge_score": None,
+            "edge_recommendation": None,
+            "blocking_reasons": ["edge_authorization_unavailable"],
+        }
+
+    edge_direction = str(scored.get("direction") or "").strip().lower()
+    recommendation = str(scored.get("recommendation") or "").strip().lower()
+    blocking_reasons = list(scored.get("blocking_reasons") or [])
+    result = {
+        "authorized": False,
+        "reason": "edge_recommendation_not_promote",
+        "edge_score": scored.get("edge_score"),
+        "edge_recommendation": recommendation or None,
+        "blocking_reasons": blocking_reasons,
+        "rejection_reasons": list(scored.get("rejection_reasons") or []),
+    }
+    if edge_direction != direction:
+        result["reason"] = "edge_direction_mismatch"
+        result["blocking_reasons"] = [*blocking_reasons, "edge_direction_mismatch"]
+        return result
+    if recommendation != "promote":
+        return result
+    if not candidate_execution_ready(scored):
+        result["reason"] = "edge_execution_quality_not_ready"
+        result["blocking_reasons"] = [*blocking_reasons, "execution_quality_not_ready"]
+        return result
+
+    result["authorized"] = True
+    result["reason"] = "edge_candidate_authorized"
+    return result
 
 
 def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter, minimax: MiniMaxAdapter, logger) -> dict:
@@ -700,11 +871,46 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
         _log_skip(logger, ticker, opt.skip_reason or "options liquidity failed")
         return {"ticker": ticker, "status": "skip", "reason": opt.skip_reason or "options_failed"}
 
+    live_edge_authorization = {}
+    if mode == "live":
+        live_edge_authorization = _authorize_live_candidate(
+            ticker,
+            pb.direction,
+            synthetic,
+            opt,
+            env,
+            logger,
+        )
+        if not live_edge_authorization.get("authorized"):
+            reason = str(live_edge_authorization.get("reason") or "edge_candidate_not_authorized")
+            append_decision(
+                {
+                    **base_record,
+                    **_doctrine_record_fields(doctrine),
+                    "stage_failed": "edge_promotion",
+                    "direction": pb.direction,
+                    "entry_price": pb.breakout_close,
+                    "anchor_hour": anchor_hour,
+                    "anchor_minute": anchor_minute,
+                    "outcome_status": _outcome_status(pb.direction, pb.breakout_close),
+                    "counterfactual": True,
+                    "skip_reason": reason,
+                    "edge_score": live_edge_authorization.get("edge_score"),
+                    "edge_recommendation": live_edge_authorization.get("edge_recommendation"),
+                    "edge_blocking_reasons": live_edge_authorization.get("blocking_reasons", []),
+                    "edge_rejection_reasons": live_edge_authorization.get("rejection_reasons", []),
+                }
+            )
+            _log_skip(logger, ticker, reason)
+            return {"ticker": ticker, "status": "skip", "reason": reason}
+
     kr = kronos.evaluate(ticker, synthetic, pb.direction)
-    if not kr.passed:
+    kronos_fields = _kronos_result_fields(kr)
+    if env.get("kronos_live_gate_enabled", False) and not kr.passed:
         rec = {
             **base_record,
             **_doctrine_record_fields(doctrine),
+            **kronos_fields,
             "stage_failed": "kronos",
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -717,6 +923,13 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
         append_decision(rec)
         _log_skip(logger, ticker, kr.skip_reason or "kronos confirmation failed")
         return {"ticker": ticker, "status": "skip", "reason": kr.skip_reason or "kronos_failed"}
+    if not kr.passed:
+        logger.info(
+            "KRONOS_ADVISORY_ONLY: %s agreement=%s reason=%s",
+            ticker,
+            kr.directional_agreement,
+            kr.skip_reason,
+        )
 
     ai_insight = minimax.score_setup(
         {
@@ -758,6 +971,7 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
         {
             **base_record,
             **_doctrine_record_fields(doctrine),
+            **kronos_fields,
             "final_pass": True,
             "direction": pb.direction,
             "entry_price": pb.breakout_close,
@@ -767,6 +981,9 @@ def _run_single_ticker(ticker: str, mode: str, env: dict, kronos: KronosAdapter,
             "stage_failed": None,
             "skip_reason": None,
             "counterfactual": False,
+            "edge_score": live_edge_authorization.get("edge_score"),
+            "edge_recommendation": live_edge_authorization.get("edge_recommendation"),
+            "edge_blocking_reasons": live_edge_authorization.get("blocking_reasons", []),
         }
     )
 
@@ -1366,6 +1583,7 @@ def run_build_retrieval_index(watchlist: list[str], logger, evidence_run: Eviden
 
 
 def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
+    started_at = _utc_now_iso()
     records = load_edge_index(EDGE_INDEX_PATH)
     analog_index = EdgeAnalogIndex(records)
     validation_records = select_recent_records(records, EDGE_VALIDATION_MAX_RECORDS)
@@ -1391,6 +1609,9 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
                 "outcome_label": record.outcome_label,
                 "outcome_return_pct": record.outcome_return_pct,
                 "r_multiple": record.r_multiple,
+                # Stop distance is the denominator the cost model needs to
+                # restate R net of the round-trip charge.
+                "risk_pct_used": record.risk_pct_used,
                 "mae_pct": record.mae_pct,
                 "mfe_pct": record.mfe_pct,
                 "exit_reason": record.exit_reason,
@@ -1424,7 +1645,7 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
         candidates,
         thresholds=EDGE_VALIDATION_THRESHOLDS,
         top_k=EDGE_VALIDATION_TOP_K,
-        slippage_pct=0.05,
+        cost_bps_per_side=EDGE_COST_BPS_PER_SIDE,
     )
     report["meta_model"] = {
         "ship_rule": "two_touch_then_highest_oof_ic",
@@ -1461,6 +1682,10 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
             },
         )
     report["mode"] = "validate_edge"
+    report["started_at"] = started_at
+    report["completed_at"] = _utc_now_iso()
+    if evidence_run is not None:
+        report["evidence_run_id"] = evidence_run.run_id
     report["validation_method"] = "purged_walk_forward"
     report["future_analogs_allowed"] = False
     report["purge_config"] = {
@@ -1524,6 +1749,8 @@ def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None
         "ticker_timings": ticker_timings,
         "candidates": ranked,
     }
+    if evidence_run is not None:
+        payload["evidence_run_id"] = evidence_run.run_id
     if evidence_run is not None:
         evidence_run.record_rows("scan_candidates", ranked)
         evidence_run.record_metrics(
@@ -1629,6 +1856,7 @@ def run_audit_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     except Exception:
         scan_report = {}
     payload = compute_edge_audit_report(validation_report, scan_report)
+    payload["generated_at"] = _utc_now_iso()
     if evidence_run is not None:
         evidence_run.record_rows("audits", [payload])
         evidence_run.record_metrics("audit_edge", _numeric_metrics(payload))
@@ -1725,7 +1953,7 @@ def run_adaptive_policy(logger, apply_tuning: bool = False) -> dict:
     payload = {**report, "apply_result": apply_result}
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORT_DIR / "adaptive_policy_report.json"
-    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(report_path, payload)
     logger.info("ADAPTIVE_POLICY_REPORT: %s", json.dumps(payload))
     logger.info("Adaptive policy report saved: %s", str(report_path.resolve()))
     return payload
@@ -1738,7 +1966,13 @@ def _research_next_actions(audit: dict, autotune: dict, adaptive_policy: dict | 
     warnings = set(audit.get("warnings", []))
     if "no_current_actionable_candidates" in warnings:
         actions.append("continue_daily_research_scan")
-    if "options_liquidity_missing" in warnings or "options_data_not_execution_grade" in warnings:
+    # options_no_liquid_contract is deliberately absent: a chain with no
+    # tradeable strike is the market's answer, not data we can go collect.
+    if warnings & {
+        "options_liquidity_missing",
+        "options_data_not_execution_grade",
+        "options_provider_unavailable",
+    }:
         actions.append("collect_better_options_truth_data")
     if autotune.get("status") == "hold_no_edge":
         actions.append("do_not_loosen_thresholds")
@@ -1807,7 +2041,7 @@ def run_research_ops(watchlist: list[str], env: dict, logger) -> dict:
     }
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORT_DIR / "research_ops_report.json"
-    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(report_path, payload)
     logger.info("RESEARCH_OPS_REPORT: %s", json.dumps(payload))
     logger.info("Research operations report saved: %s", str(report_path.resolve()))
     return payload

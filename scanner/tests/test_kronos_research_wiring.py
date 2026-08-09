@@ -127,6 +127,176 @@ def test_model_failure_is_not_journaled_as_disagreement(monkeypatch):
     assert record["kronos_eval_error"] == "Kronos error: model exploded"
 
 
+def _patch_strict_scan(monkeypatch, captured, kronos_result):
+    bars = pd.DataFrame(
+        {"Open": [10.0], "High": [10.5], "Low": [9.8], "Close": [10.2], "Volume": [1000]},
+        index=pd.DatetimeIndex([pd.Timestamp("2026-07-01", tz="America/New_York")]),
+    )
+    monkeypatch.setattr(scanner_main, "validate_ticker", lambda ticker, logger: SimpleNamespace(skip_reason=None))
+    monkeypatch.setattr(scanner_main, "_resolve_calibrated_anchor", lambda ticker: (20, 0))
+    monkeypatch.setattr(scanner_main, "fetch_intraday_bars", lambda ticker, research=False: bars)
+    monkeypatch.setattr(scanner_main, "build_synthetic_sessions", lambda **kwargs: (bars, {}))
+    monkeypatch.setattr(
+        scanner_main,
+        "detect_potter_box",
+        lambda ticker, synthetic: SimpleNamespace(
+            passed=True,
+            direction="bullish",
+            box_top=10.0,
+            box_bottom=9.0,
+            cost_basis=9.5,
+            breakout_close=10.2,
+            breakout_strength_pct=2.0,
+            skip_reason=None,
+        ),
+    )
+    monkeypatch.setattr(
+        scanner_main,
+        "score_empty_space",
+        lambda *args: SimpleNamespace(
+            passed=True,
+            score=3,
+            nearest_target=12.0,
+            risk_pct=2.0,
+            rr_ratio=2.0,
+            skip_reason=None,
+        ),
+    )
+    monkeypatch.setattr(scanner_main, "score_potter_doctrine_v2", lambda *args: {})
+    monkeypatch.setattr(
+        scanner_main,
+        "assess_event_risk",
+        lambda ticker, logger: SimpleNamespace(passed=True, status="clear", skip_reason=None),
+    )
+    monkeypatch.setattr(
+        scanner_main,
+        "select_options_contract",
+        lambda *args: SimpleNamespace(
+            passed=True,
+            spread_pct=0.05,
+            open_interest=1000,
+            skip_reason=None,
+        ),
+    )
+    monkeypatch.setattr(scanner_main, "append_decision", lambda rec: captured.append(rec) or True)
+    monkeypatch.setattr(scanner_main, "render_alert_message", lambda candidate: "preview")
+    return SimpleNamespace(evaluate=lambda *args: kronos_result)
+
+
+def test_strict_scan_treats_unvalidated_kronos_as_advisory_and_journals_fields(monkeypatch):
+    captured = []
+    kronos = _patch_strict_scan(
+        monkeypatch,
+        captured,
+        SimpleNamespace(
+            passed=False,
+            directional_agreement=0.2,
+            median_forecast_return_pct=-1.1,
+            worst_sampled_return_pct=-2.2,
+            skip_reason="directional agreement 20% < 65%",
+        ),
+    )
+    minimax = SimpleNamespace(score_setup=lambda payload: {"status": "disabled"})
+
+    result = scanner_main._run_single_ticker(
+        "TEST", "dry_run", {"kronos_live_gate_enabled": False}, kronos, minimax, logging.getLogger("test")
+    )
+
+    assert result["status"] == "pass"
+    assert captured[0]["final_pass"] is True
+    assert captured[0]["kronos_passed"] is False
+    assert captured[0]["kronos_directional_agreement"] == 0.2
+    assert captured[0]["stage_failed"] is None
+
+
+def test_strict_scan_can_explicitly_restore_kronos_hard_gate(monkeypatch):
+    captured = []
+    kronos = _patch_strict_scan(
+        monkeypatch,
+        captured,
+        SimpleNamespace(
+            passed=False,
+            directional_agreement=0.2,
+            median_forecast_return_pct=-1.1,
+            worst_sampled_return_pct=-2.2,
+            skip_reason="directional agreement 20% < 65%",
+        ),
+    )
+
+    result = scanner_main._run_single_ticker(
+        "TEST",
+        "dry_run",
+        {"kronos_live_gate_enabled": True},
+        kronos,
+        SimpleNamespace(),
+        logging.getLogger("test"),
+    )
+
+    assert result["status"] == "skip"
+    assert captured[0]["stage_failed"] == "kronos"
+    assert captured[0]["kronos_directional_agreement"] == 0.2
+    assert captured[0]["kronos_passed"] is False
+
+
+def test_live_strict_signal_cannot_bypass_edge_promotion(monkeypatch):
+    captured = []
+    kronos = _patch_strict_scan(
+        monkeypatch,
+        captured,
+        SimpleNamespace(
+            passed=True,
+            directional_agreement=0.8,
+            median_forecast_return_pct=1.1,
+            worst_sampled_return_pct=-0.5,
+            skip_reason=None,
+        ),
+    )
+    telegram_calls = []
+    monkeypatch.setattr(
+        scanner_main,
+        "_authorize_live_candidate",
+        lambda *args, **kwargs: {
+            "authorized": False,
+            "reason": "edge_recommendation_not_promote",
+            "edge_score": 42.0,
+            "edge_recommendation": "reject",
+            "blocking_reasons": ["edge_score_below_promotion_threshold"],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner_main,
+        "send_telegram_message",
+        lambda *args, **kwargs: telegram_calls.append(args) or True,
+    )
+
+    result = scanner_main._run_single_ticker(
+        "TEST",
+        "live",
+        {
+            "kronos_live_gate_enabled": False,
+            "live_mode_enabled": True,
+            "telegram_token": "token",
+            "telegram_chat_id": "chat",
+            "_live_promotable_directions": ("bullish",),
+        },
+        kronos,
+        SimpleNamespace(score_setup=lambda payload: {"status": "disabled"}),
+        logging.getLogger("test"),
+    )
+
+    assert result == {
+        "ticker": "TEST",
+        "status": "skip",
+        "reason": "edge_recommendation_not_promote",
+    }
+    assert telegram_calls == []
+    assert captured[-1]["final_pass"] is False
+    assert captured[-1]["stage_failed"] == "edge_promotion"
+    assert captured[-1]["counterfactual"] is True
+    assert captured[-1]["edge_recommendation"] == "reject"
+
+
 def _adapter_bars(rows=90):
     rng = np.random.default_rng(3)
     closes = 100 + np.cumsum(rng.normal(0, 1, rows))

@@ -13,6 +13,8 @@ REQUIRED_MODULES = (
     "requests",
     "dotenv",
     "yfinance",
+    # yfinance price repair imports SciPy at runtime for some bad-bar paths.
+    "scipy",
     # Exchange-calendar session-completeness checks in the bar contract.
     "pandas_market_calendars",
 )

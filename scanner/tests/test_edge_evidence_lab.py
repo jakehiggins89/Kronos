@@ -237,6 +237,8 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
     validation_path.write_text(
         json.dumps(
             {
+                "completed_at": "2026-08-01T18:00:00+00:00",
+                "evidence_run_id": "lab-run",
                 "validation_method": "purged_walk_forward",
                 "future_analogs_allowed": False,
                 "thresholds": {"55": {"signal_count": 0, "precision": 0.0, "average_r_multiple": 0.0}},
@@ -244,7 +246,16 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
-    scan_path.write_text(json.dumps({"candidates": []}), encoding="utf-8")
+    scan_path.write_text(
+        json.dumps(
+            {
+                "completed_at": "2026-08-01T18:01:00+00:00",
+                "evidence_run_id": "lab-run",
+                "candidates": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr("scanner.main.EDGE_VALIDATION_REPORT_PATH", validation_path)
     monkeypatch.setattr("scanner.main.EDGE_SCAN_REPORT_PATH", scan_path)
     monkeypatch.setattr("scanner.main.EDGE_AUDIT_REPORT_PATH", audit_path)
@@ -253,4 +264,11 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
 
     assert report["readiness"] == "blocked"
     assert "validation_threshold_55_unsupported" in report["blockers"]
+    assert report["evidence_provenance"] == {
+        "scan_completed_at": "2026-08-01T18:01:00+00:00",
+        "validation_completed_at": "2026-08-01T18:00:00+00:00",
+        "scan_run_id": "lab-run",
+        "validation_run_id": "lab-run",
+    }
+    assert report["generated_at"]
     assert json.loads(audit_path.read_text(encoding="utf-8"))["mode"] == "audit_edge"

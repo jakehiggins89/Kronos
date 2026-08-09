@@ -77,6 +77,16 @@ def test_adaptive_policy_selects_supported_higher_score_threshold():
     assert selected["average_return_pct"] > 1.0
 
 
+def test_adaptive_policy_holds_supported_current_research_threshold_without_noop():
+    records = [_research_record(f"W{i}", 65, "win", 1.0, i + 1) for i in range(8)]
+
+    report = build_adaptive_policy_report(records, current_research_score=65, min_research_samples=8)
+
+    assert report["recommendation"]["status"] == "hold_supported_research_threshold"
+    assert report["recommendation"]["auto_apply_safe"] is False
+    assert report["recommendation"]["proposed_overrides"] == {}
+
+
 def test_adaptive_policy_does_not_ratcheting_tighten_without_current_threshold_samples():
     records = [
         _research_record("L1", 63, "loss", -2.2, 1),
@@ -122,6 +132,115 @@ def test_adaptive_policy_can_tighten_doctrine_v2_baseline_from_losses():
     assert report["doctrine_v2"]["punchback_states"]["failed_reentry"]["losses"] == 4
     assert report["doctrine_v2"]["recommendation"]["status"] == "tighten_doctrine_v2_baseline"
     assert report["recommendation"]["proposed_overrides"] == {"DOCTRINE_V2_SCORE_BASELINE": 75}
+
+
+def test_adaptive_policy_holds_supported_current_doctrine_baseline_without_noop():
+    records = [
+        _research_record(f"D{i}", 65, "win", 1.0, i + 1, doctrine_score=75)
+        for i in range(8)
+    ]
+
+    report = build_adaptive_policy_report(
+        records,
+        current_research_score=80,
+        current_doctrine_score_baseline=75,
+        min_research_samples=8,
+        min_doctrine_samples=8,
+    )
+
+    recommendation = report["doctrine_v2"]["recommendation"]
+    assert recommendation["status"] == "hold_supported_doctrine_v2_baseline"
+    assert recommendation["auto_apply_safe"] is False
+    assert recommendation["proposed_overrides"] == {}
+
+
+def test_adaptive_policy_does_not_count_overlapping_ticker_outcomes_as_independent():
+    records = [
+        {
+            **_research_record("IONQ", 75, "win", 10.0, day, doctrine_score=80),
+            "source_session_date": f"2026-06-{day:02d}",
+        }
+        for day in range(1, 9)
+    ]
+
+    report = build_adaptive_policy_report(
+        records,
+        current_research_score=65,
+        current_doctrine_score_baseline=70,
+        min_research_samples=8,
+        min_doctrine_samples=8,
+    )
+
+    research = report["research_candidates"]
+    assert research["resolved"] == 8
+    assert research["independent_resolved"] == 1
+    assert research["evidence_independence"]["overlap_rows_excluded"] == 7
+    assert research["signal_count"] == 1
+    assert report["recommendation"]["auto_apply_safe"] is False
+    assert report["doctrine_v2"]["independent_resolved"] == 1
+    assert report["doctrine_v2"]["recommendation"]["auto_apply_safe"] is False
+
+
+def test_adaptive_policy_does_not_count_same_day_cross_ticker_outcomes_as_independent():
+    records = [
+        {
+            **_research_record(f"TICKER{i}", 75, "win", 10.0, 1, doctrine_score=80),
+            "source_session_date": "2026-06-01",
+        }
+        for i in range(8)
+    ]
+
+    report = build_adaptive_policy_report(
+        records,
+        current_research_score=65,
+        current_doctrine_score_baseline=70,
+        min_research_samples=8,
+        min_doctrine_samples=8,
+    )
+
+    research = report["research_candidates"]
+    assert research["independent_resolved"] == 8
+    assert research["evidence_independence"]["evidence_days"] == 1
+    assert research["signal_count"] == 8
+    assert research["evidence_day_count"] == 1
+    assert report["recommendation"]["auto_apply_safe"] is False
+    assert report["doctrine_v2"]["evidence_independence"]["evidence_days"] == 1
+    assert report["doctrine_v2"]["recommendation"]["auto_apply_safe"] is False
+
+
+def test_adaptive_policy_keeps_non_overlapping_ticker_outcomes():
+    records = [
+        _research_record("IONQ", 70, "win", 2.0, 1),
+        _research_record("IONQ", 70, "loss", -1.0, 12),
+    ]
+
+    report = build_adaptive_policy_report(records, current_research_score=65, min_research_samples=99)
+
+    research = report["research_candidates"]
+    assert research["independent_resolved"] == 2
+    assert research["evidence_independence"]["overlap_rows_excluded"] == 0
+    assert research["signal_count"] == 2
+
+
+def test_adaptive_policy_reports_current_threshold_evidence_by_direction():
+    records = [
+        {**_research_record("BULL1", 70, "win", 2.0, 1), "direction": "bullish"},
+        {**_research_record("BULL2", 70, "loss", -1.0, 2), "direction": "bullish"},
+        {**_research_record("BEAR1", 70, "win", 4.0, 3), "direction": "bearish"},
+        {**_research_record("BEAR2", 70, "win", 2.0, 4), "direction": "bearish"},
+    ]
+
+    report = build_adaptive_policy_report(records, current_research_score=65, min_research_samples=99)
+
+    by_direction = report["research_candidates"]["current_threshold_by_direction"]
+    assert by_direction["bullish"]["signal_count"] == 2
+    assert by_direction["bullish"]["wins"] == 1
+    assert by_direction["bullish"]["losses"] == 1
+    assert by_direction["bullish"]["average_return_pct"] == 0.5
+    assert by_direction["bearish"]["signal_count"] == 2
+    assert by_direction["bearish"]["wins"] == 2
+    assert by_direction["bearish"]["losses"] == 0
+    assert by_direction["bearish"]["average_return_pct"] == 3.0
 
 
 def test_metric_returns_prefer_barrier_outcome_over_close_horizon():
@@ -190,13 +309,42 @@ def test_apply_adaptive_overrides_refreshes_runtime_config(monkeypatch, tmp_path
     assert calls == ["reload"]
 
 
+def test_apply_adaptive_overrides_does_not_record_noop_as_change(monkeypatch, tmp_path):
+    overrides_path = _patch_apply_env(monkeypatch, tmp_path, current_score=65)
+    original = {
+        "RESEARCH_CANDIDATE_MIN_SCORE": 65,
+        "_meta": {"last_auto_change_at": "2026-07-01T00:00:00+00:00"},
+    }
+    overrides_path.write_text(json.dumps(original), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        "scanner.learning.adaptive_policy.scanner_config.reload_overrides",
+        lambda: calls.append("reload"),
+    )
+
+    result = apply_adaptive_overrides(
+        {
+            "recommendation": {
+                "auto_apply_safe": True,
+                "proposed_overrides": {"RESEARCH_CANDIDATE_MIN_SCORE": 65},
+            }
+        },
+        logger=None,
+        now="2026-07-18T18:00:00Z",
+    )
+
+    assert result["status"] == "no_overrides_applied"
+    assert json.loads(overrides_path.read_text(encoding="utf-8")) == original
+    assert calls == []
+
+
 def _loosen_deadlock_records():
     """The observed deadlock: threshold 72 starves (n=5, loss-heavy) while 65
-    holds three times the samples with positive returns."""
+    holds three times the samples with positive, regime-stable returns."""
     records = []
     day = 1
-    for i in range(18):
-        label = "win" if i < 11 else "loss"
+    mid_labels = ["win", "loss"] * 7 + ["win"] * 4
+    for i, label in enumerate(mid_labels):
         ret = 1.8 if label == "win" else -1.2
         records.append(_research_record(f"MID{i}", 66, label, ret, (day := day + 1) % 28 or 1))
     for i in range(5):
@@ -220,7 +368,7 @@ def test_adaptive_policy_loosens_when_lower_threshold_dominates():
 
 
 def test_adaptive_policy_does_not_loosen_on_thin_challenger():
-    records = _loosen_deadlock_records()[8:]  # challenger cohort now too small
+    records = _loosen_deadlock_records()[12:]  # challenger cohort now below 12 evidence days
 
     report = build_adaptive_policy_report(records, current_research_score=72, min_research_samples=8)
 

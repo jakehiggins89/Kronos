@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-def wilson_lower_bound(wins: int, total: int, z: float = 1.28) -> float:
+def wilson_lower_bound(wins: float, total: int, z: float = 1.28) -> float:
     """Conservative lower bound on a binomial proportion."""
     if total <= 0:
         return 0.0
@@ -33,6 +33,62 @@ def t_statistic(values: list[float]) -> float:
     return mean / (sd / math.sqrt(n))
 
 
+def _entry_day_means(values: list[float], day_keys: list[str]) -> tuple[list[float], int]:
+    buckets: dict[str, list[float]] = {}
+    valid_count = 0
+    for value, day in zip(values, day_keys, strict=False):
+        if isinstance(value, (int, float)) and math.isfinite(float(value)) and day:
+            buckets.setdefault(str(day), []).append(float(value))
+            valid_count += 1
+
+    # Production keys are ISO dates. Sort them chronologically so HAC lags
+    # describe adjacent entry days even though validation rows arrive score-
+    # sorted. Synthetic/non-date keys retain insertion order.
+    ordered_days = list(buckets)
+    try:
+        parsed = {day: pd.Timestamp(day) for day in ordered_days}
+        if any(pd.isna(timestamp) for timestamp in parsed.values()):
+            raise ValueError("unparseable entry day")
+        ordered_days.sort(key=lambda day: parsed[day])
+    except Exception:
+        pass
+    return [float(np.mean(buckets[day])) for day in ordered_days], valid_count
+
+
+def _hac_day_mean_summary(values: list[float], day_keys: list[str], hac_lags: int = 5) -> dict:
+    day_means, valid_count = _entry_day_means(values, day_keys)
+    n_days = len(day_means)
+    mean = float(np.mean(day_means)) if day_means else 0.0
+    standard_error = 0.0
+    t_stat = 0.0
+
+    if n_days >= 2:
+        centered = np.asarray(day_means, dtype=float) - mean
+        gamma_zero = float(centered @ centered) / n_days
+        long_run_variance = gamma_zero
+        max_lag = min(max(int(hac_lags), 0), n_days - 1)
+        for lag in range(1, max_lag + 1):
+            weight = 1.0 - lag / (max_lag + 1.0)
+            gamma_lag = float(centered[lag:] @ centered[:-lag]) / n_days
+            long_run_variance += 2.0 * weight * gamma_lag
+        # Bartlett/Newey-West is non-negative in population. Numerical noise can
+        # put a nearly-zero finite-sample estimate just below zero.
+        long_run_variance = max(long_run_variance, 0.0)
+        long_run_variance *= n_days / (n_days - 1.0)
+        standard_error = math.sqrt(long_run_variance / n_days)
+        if standard_error > 1e-12:
+            t_stat = mean / standard_error
+
+    return {
+        "signal_count": valid_count,
+        "n_days": n_days,
+        "mean_of_day_means": mean,
+        "standard_error": standard_error,
+        "t_stat": round(t_stat, 4),
+        "method": f"entry_day_mean_hac_lag{max(int(hac_lags), 0)}",
+    }
+
+
 def _one_sided_p_from_t(t: float) -> float:
     # Normal approximation; adequate at the sample sizes gating decisions here.
     return 0.5 * (1.0 - math.erf(t / math.sqrt(2.0)))
@@ -42,13 +98,17 @@ def _two_sided_p_from_t(t: float) -> float:
     return min(1.0, 2.0 * _one_sided_p_from_t(abs(t)))
 
 
-def _cluster_robust_slope_t(x: np.ndarray, y: np.ndarray, clusters: list[str]) -> float | None:
-    """OLS slope t-statistic with a one-way cluster-robust covariance.
+def _cluster_robust_slope_t(
+    x: np.ndarray, y: np.ndarray, clusters: list[str], hac_lags: int = 5
+) -> float | None:
+    """OLS slope t-statistic with entry-day clustering and HAC lags.
 
     Spearman correlation is the OLS slope between standardized ranks.  This
     sandwich estimator keeps the row-level rank relationship while allowing
-    arbitrary dependence among records sharing an entry day.  It replaces the
-    old shortcut that merely put ``n_days`` into an IID correlation formula.
+    arbitrary dependence among records sharing an entry day. Newey-West terms
+    over ordered day-score vectors also cover serial dependence from overlapping
+    multi-day outcome windows. It replaces the old shortcut that merely put
+    ``n_days`` into an IID correlation formula.
     """
     n = len(x)
     unique_clusters = sorted(set(clusters))
@@ -62,12 +122,19 @@ def _cluster_robust_slope_t(x: np.ndarray, y: np.ndarray, clusters: list[str]) -
     beta = xtx_inv @ design.T @ y
     residuals = y - design @ beta
 
-    meat = np.zeros((k, k), dtype=float)
+    day_scores = []
     cluster_array = np.asarray(clusters, dtype=object)
     for cluster in unique_clusters:
         mask = cluster_array == cluster
-        score = design[mask].T @ residuals[mask]
-        meat += np.outer(score, score)
+        day_scores.append(design[mask].T @ residuals[mask])
+
+    score_matrix = np.asarray(day_scores, dtype=float)
+    meat = score_matrix.T @ score_matrix
+    max_lag = min(max(int(hac_lags), 0), g - 1)
+    for lag in range(1, max_lag + 1):
+        weight = 1.0 - lag / (max_lag + 1.0)
+        cross = score_matrix[lag:].T @ score_matrix[:-lag]
+        meat += weight * (cross + cross.T)
 
     # CR1 finite-sample correction, matching common clustered-OLS defaults.
     correction = (g / (g - 1.0)) * ((n - 1.0) / (n - k))
@@ -79,22 +146,53 @@ def _cluster_robust_slope_t(x: np.ndarray, y: np.ndarray, clusters: list[str]) -
 
 
 def day_clustered_t(values: list[float], day_keys: list[str]) -> dict:
-    """One-sample t against zero computed on per-day means.
+    """One-sample t against zero on entry-day means with serial HAC.
 
     Trades entered the same day share the market factor and (with 5-bar
     horizons) most of their outcome window; the per-trade t treats them as
-    independent and overstates confidence. Clustering by entry day is the
-    cheapest honest correction: n becomes the number of distinct days.
+    independent and overstates confidence. Entry-day aggregation handles the
+    market cluster; five Newey-West lags handle overlapping outcome windows on
+    adjacent entry days.
     """
-    buckets: dict[str, list[float]] = {}
-    for value, day in zip(values, day_keys, strict=False):
-        if isinstance(value, (int, float)) and math.isfinite(float(value)) and day:
-            buckets.setdefault(str(day), []).append(float(value))
-    day_means = [float(np.mean(vals)) for vals in buckets.values()]
+    return _hac_day_mean_summary(values, day_keys, hac_lags=5)
+
+
+def day_clustered_precision(
+    win_values: list[float],
+    day_keys: list[str],
+    *,
+    z: float = 1.645,
+    hac_lags: int = 5,
+) -> dict:
+    """Dependence-aware lower bound for a selected cohort's win rate.
+
+    Daily win-rate means prevent a crowded entry day from masquerading as many
+    independent Bernoulli trials. The lower bound is the more conservative of
+    a HAC normal bound (serial overlap) and a Wilson bound whose effective n is
+    the number of entry days (small-sample/binomial uncertainty).
+    """
+    summary = _hac_day_mean_summary(win_values, day_keys, hac_lags=hac_lags)
+    n_days = int(summary["n_days"])
+    mean = float(summary["mean_of_day_means"])
+    standard_error = float(summary["standard_error"])
+    if n_days < 2:
+        hac_lower = 0.0
+        wilson_day_lower = 0.0
+        lower_bound = 0.0
+    else:
+        hac_lower = max(0.0, mean - abs(float(z)) * standard_error)
+        wilson_day_lower = wilson_lower_bound(mean * n_days, n_days, z=abs(float(z)))
+        lower_bound = min(hac_lower, wilson_day_lower)
     return {
-        "t_stat": round(t_statistic(day_means), 4),
-        "n_days": len(day_means),
-        "mean_of_day_means": round(float(np.mean(day_means)), 4) if day_means else 0.0,
+        "signal_count": int(summary["signal_count"]),
+        "n_days": n_days,
+        "mean_daily_precision": round(mean, 4),
+        "lower_bound": round(lower_bound, 4),
+        "hac_normal_lower_bound": round(hac_lower, 4),
+        "wilson_day_lower_bound": round(wilson_day_lower, 4),
+        "standard_error": round(standard_error, 6),
+        "z": abs(float(z)),
+        "method": f"entry_day_mean_hac_lag{max(int(hac_lags), 0)}_min_wilson",
     }
 
 
@@ -114,6 +212,7 @@ def tercile_lift(
     row_ids: list[str] | None = None,
     n_boot: int = 400,
     seed: int = 7,
+    block_days: int = 5,
 ) -> dict:
     """Mean R per score tercile with a day-block bootstrap CI on the spread.
 
@@ -161,8 +260,13 @@ def tercile_lift(
     if len(days) >= 6 and n_boot > 0:
         rng = np.random.default_rng(seed)
         spreads = []
+        block_days = min(max(int(block_days), 1), len(days))
         for _ in range(n_boot):
-            drawn = rng.choice(len(days), size=len(days), replace=True)
+            drawn = []
+            while len(drawn) < len(days):
+                start = int(rng.integers(0, len(days)))
+                drawn.extend((start + offset) % len(days) for offset in range(block_days))
+            drawn = drawn[: len(days)]
             sample: list[tuple[float, float, str, str]] = []
             for day_idx in drawn:
                 sample.extend(by_day[days[int(day_idx)]])
@@ -184,6 +288,8 @@ def tercile_lift(
         "spread_ci_low": round(ci_low, 4) if ci_low is not None else None,
         "spread_ci_high": round(ci_high, 4) if ci_high is not None else None,
         "distinct_days": len(days),
+        "bootstrap_method": "circular_moving_entry_day_blocks",
+        "bootstrap_block_days": min(max(int(block_days), 1), len(days)) if days else None,
     }
 
 
@@ -239,11 +345,9 @@ def spearman_rank_ic(scores: list[float], outcomes: list[float], day_keys: list[
     Two-sided values are also returned so negative associations are not
     mislabeled using a one-sided significance number.
 
-    When day_keys are provided, the day-clustered values use a one-way
-    cluster-robust sandwich covariance on the rank regression.  This handles
-    arbitrary same-entry-day dependence.  It does not handle dependence across
-    adjacent entry days caused by overlapping multi-day outcomes; callers
-    making confirmatory claims should additionally use time-block inference.
+    When day_keys are provided, the day-clustered values use a sandwich
+    covariance on the rank regression with arbitrary same-entry-day dependence
+    and five Newey-West entry-day lags for overlapping outcome windows.
     """
     pairs = []
     pair_days = []
@@ -289,7 +393,7 @@ def spearman_rank_ic(scores: list[float], outcomes: list[float], day_keys: list[
             if t_clustered is not None:
                 result["p_value_day_clustered"] = round(_one_sided_p_from_t(t_clustered), 6)
                 result["p_value_day_clustered_two_sided"] = round(_two_sided_p_from_t(t_clustered), 6)
-                result["day_cluster_method"] = "one_way_entry_day_cluster_robust_cr1"
+                result["day_cluster_method"] = "entry_day_cluster_hac_lag5_cr1"
             else:
                 result["p_value_day_clustered"] = 1.0
                 result["p_value_day_clustered_two_sided"] = 1.0

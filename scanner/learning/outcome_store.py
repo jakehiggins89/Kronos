@@ -19,19 +19,51 @@ logger = logging.getLogger("scanner.outcome_store")
 def decision_fingerprint(record: dict) -> str:
     decision_ts = str(record.get("decision_ts") or record.get("created_at") or "")
     decision_day = decision_ts[:10]
-    try:
-        entry_price = round(float(record.get("entry_price") or 0.0), 4)
-    except (TypeError, ValueError):
-        entry_price = 0.0
+    session_day = _record_session_day(record, decision_day)
     parts = (
         str(record.get("ticker") or "").upper(),
         str(record.get("mode") or ""),
         str(record.get("direction") or ""),
-        f"{entry_price:.4f}",
+        _record_sample_class(record),
         str(record.get("stage_failed") or "passed_all"),
-        decision_day,
+        session_day,
     )
     return "|".join(parts)
+
+
+def _record_sample_class(record: dict) -> str:
+    status = str(record.get("outcome_status") or "")
+    if status in {"pending", "resolved"}:
+        return "tracked_sample"
+    return "not_applicable"
+
+
+def _record_session_day(record: dict, decision_day: str) -> str:
+    explicit_day = record.get("source_session_date")
+    if explicit_day:
+        return str(explicit_day)[:10]
+
+    source_ts = record.get("latest_source_timestamp")
+    if source_ts:
+        try:
+            return pd.Timestamp(source_ts).date().isoformat()
+        except Exception:
+            logger.warning("JOURNAL_BAD_SOURCE_TIMESTAMP: %s", source_ts)
+
+    return _weekend_adjusted_decision_day(decision_day)
+
+
+def _weekend_adjusted_decision_day(decision_day: str) -> str:
+    """Collapse old weekend rows onto Friday when source-session metadata is absent."""
+    try:
+        ts = pd.Timestamp(decision_day)
+    except Exception:
+        return decision_day
+    if ts.dayofweek == 5:
+        return (ts - pd.Timedelta(days=1)).date().isoformat()
+    if ts.dayofweek == 6:
+        return (ts - pd.Timedelta(days=2)).date().isoformat()
+    return decision_day
 
 
 def _record_rank(record: dict) -> tuple[int, int]:
@@ -73,8 +105,16 @@ def deduplicate_decisions(records: Iterable[dict]) -> tuple[list[dict], dict]:
         payload = dict(record)
         fingerprint = decision_fingerprint(payload)
         existing = selected.get(fingerprint)
-        if existing is None or _record_rank(payload) > _record_rank(existing[1]):
+        if existing is None:
             selected[fingerprint] = (index, payload)
+            continue
+        existing_index, existing_payload = existing
+        if _record_rank(payload) > _record_rank(existing_payload):
+            merged, _changed = _merge_enrichment(payload, existing_payload)
+            selected[fingerprint] = (index, merged)
+        else:
+            merged, _changed = _merge_enrichment(existing_payload, payload)
+            selected[fingerprint] = (existing_index, merged)
     clean = [payload for _index, payload in sorted(selected.values(), key=lambda item: item[0])]
     return clean, {
         "input_records": len(rows),

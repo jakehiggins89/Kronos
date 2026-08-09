@@ -57,6 +57,134 @@ def test_review_pending_outcomes_anchors_after_hours_decision_to_signal_session(
     assert reviewed[0]["outcome_ret_5bar_pct"] == 25.0
 
 
+def test_source_timestamp_maps_to_shifted_synthetic_session_label():
+    sessions = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-07-12 00:00", tz="America/New_York"),
+            pd.Timestamp("2026-07-13 00:00", tz="America/New_York"),
+        ]
+    )
+    record = {
+        "latest_source_timestamp": "2026-07-13T14:00:00-04:00",
+        "anchor_hour": 20,
+        "anchor_minute": 0,
+    }
+    created = pd.Timestamp("2026-07-13T14:32:00-04:00")
+
+    assert outcome_reviewer._record_session_position(sessions, record, created) == 0
+    # The legacy decision-time lookup demonstrates the old off-by-one: it
+    # selects the next session label, whose bars come from July 14.
+    assert outcome_reviewer._decision_session_position(sessions, created) == 1
+
+
+def test_review_waits_for_complete_target_synthetic_session(monkeypatch, tmp_path):
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp(day, tz="America/New_York") for day in (
+            "2026-07-12",
+            "2026-07-13",
+            "2026-07-14",
+            "2026-07-15",
+            "2026-07-16",
+            "2026-07-19",
+        )]
+    )
+    synthetic = pd.DataFrame(
+        {
+            "Open": [10.0, 10.1, 10.2, 10.3, 10.4, 10.5],
+            "High": [10.1, 10.2, 10.3, 10.4, 10.5, 10.6],
+            "Low": [9.9, 10.0, 10.1, 10.2, 10.3, 10.4],
+            "Close": [10.0, 10.1, 10.2, 10.3, 10.4, 10.5],
+        },
+        index=idx,
+    )
+    synthetic.attrs["data_delay_minutes"] = 16
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-07-13T14:32:00-04:00",
+            "latest_source_timestamp": "2026-07-13T14:00:00-04:00",
+            "anchor_hour": 20,
+            "anchor_minute": 0,
+            "direction": "bullish",
+            "entry_price": 10.0,
+            "outcome_status": "pending",
+            "counterfactual": True,
+        }
+    ]
+
+    now = {"value": pd.Timestamp("2026-07-20T14:30:00-04:00")}
+    monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
+    monkeypatch.setattr(outcome_reviewer, "_now_timestamp", lambda: now["value"])
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: pd.DataFrame())
+    monkeypatch.setattr(
+        outcome_reviewer,
+        "build_synthetic_sessions",
+        lambda intraday, anchor_hour, anchor_minute, source_interval, prepost_enabled: (synthetic, {}),
+    )
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+    assert summary["resolved_now"] == 0
+    assert reviewed[0]["outcome_status"] == "pending"
+
+    now["value"] = pd.Timestamp("2026-07-20T20:16:00-04:00")
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+    assert summary["resolved_now"] == 1
+    assert reviewed[0]["outcome_status"] == "resolved"
+    assert reviewed[0]["outcome_ret_5bar_pct"] == 5.0
+    assert (
+        reviewed[0]["outcome_session_alignment_version"]
+        == outcome_reviewer.OUTCOME_SESSION_ALIGNMENT_VERSION
+    )
+
+
+def test_resolved_source_timestamp_outcome_is_repaired(monkeypatch, tmp_path):
+    idx = pd.date_range("2026-07-01", periods=7, freq="D", tz="America/New_York")
+    synthetic = pd.DataFrame(
+        {
+            "Open": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0, 11.2],
+            "High": [10.1, 10.3, 10.5, 10.7, 10.9, 11.1, 11.3],
+            "Low": [9.9, 10.1, 10.3, 10.5, 10.7, 10.9, 11.1],
+            "Close": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0, 11.2],
+        },
+        index=idx,
+    )
+    records = [
+        {
+            "ticker": "TEST",
+            "decision_ts": "2026-07-02T14:32:00-04:00",
+            "latest_source_timestamp": "2026-07-02T14:00:00-04:00",
+            "anchor_hour": 0,
+            "anchor_minute": 0,
+            "direction": "bullish",
+            "entry_price": 10.2,
+            "outcome_status": "resolved",
+            "outcome_label": "loss",
+            "outcome_ret_5bar_pct": -99.0,
+            "counterfactual": True,
+        }
+    ]
+
+    monkeypatch.setattr(outcome_reviewer, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(outcome_reviewer, "OUTCOME_MIN_AGE_DAYS", -1_000_000)
+    monkeypatch.setattr(outcome_reviewer, "_now_timestamp", lambda: pd.Timestamp("2026-07-20", tz="America/New_York"))
+    monkeypatch.setattr(outcome_reviewer, "fetch_intraday_bars", lambda ticker, research=False: pd.DataFrame())
+    monkeypatch.setattr(
+        outcome_reviewer,
+        "build_synthetic_sessions",
+        lambda intraday, anchor_hour, anchor_minute, source_interval, prepost_enabled: (synthetic, {}),
+    )
+
+    reviewed, summary = outcome_reviewer.review_pending_outcomes(records, logging.getLogger("test"))
+
+    assert summary["alignment_repairs_reviewed"] == 1
+    assert summary["alignment_repairs_resolved"] == 1
+    assert summary["alignment_repairs_pending"] == 0
+    assert reviewed[0]["outcome_status"] == "resolved"
+    assert reviewed[0]["outcome_label"] == "win"
+    assert reviewed[0]["outcome_ret_5bar_pct"] != -99.0
+
+
 def _ohlc_sessions():
     idx = pd.DatetimeIndex(
         [pd.Timestamp(f"2026-06-{day:02d} 00:00", tz="America/New_York") for day in (22, 23, 24, 25, 26, 29, 30)]

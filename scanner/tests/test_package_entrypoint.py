@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import scanner.main as scanner_main
@@ -138,7 +139,40 @@ def test_live_preflight_blocks_stale_audit(monkeypatch, tmp_path):
     assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
 
 
-def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
+def test_live_preflight_blocks_fresh_file_rewritten_from_stale_evidence(monkeypatch, tmp_path):
+    audit_path = tmp_path / "edge_audit_report.json"
+    stale_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": stale_at,
+                    "validation_completed_at": stale_at,
+                    "scan_run_id": "stale-run",
+                    "validation_run_id": "stale-run",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
+def test_live_preflight_blocks_paper_audit_without_intrinsic_provenance(monkeypatch, tmp_path):
     audit_path = tmp_path / "edge_audit_report.json"
     audit_path.write_text(
         json.dumps({"readiness": "paper_trade_only", "blockers": [], "warnings": []}),
@@ -155,4 +189,171 @@ def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
         "minimax_api_key": "",
     }
 
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
+def test_live_preflight_blocks_mixed_evidence_lab_runs(monkeypatch, tmp_path):
+    audit_path = tmp_path / "edge_audit_report.json"
+    completed_at = datetime.now(timezone.utc).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": completed_at,
+                    "validation_completed_at": completed_at,
+                    "scan_run_id": "scan-run",
+                    "validation_run_id": "validation-run",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
+def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
+    audit_path = tmp_path / "edge_audit_report.json"
+    completed_at = datetime.now(timezone.utc).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": completed_at,
+                    "validation_completed_at": completed_at,
+                    "scan_run_id": "current-run",
+                    "validation_run_id": "current-run",
+                },
+                "summary": {
+                    "promotable_directions": ["bullish"],
+                    "execution_ready_promoted_candidates": ["TEST"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
     assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is True
+    assert env["_live_promotable_directions"] == ("bullish",)
+
+
+def test_live_preflight_blocks_paper_audit_without_candidate_authorization(monkeypatch, tmp_path):
+    audit_path = tmp_path / "edge_audit_report.json"
+    completed_at = datetime.now(timezone.utc).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": completed_at,
+                    "validation_completed_at": completed_at,
+                    "scan_run_id": "current-run",
+                    "validation_run_id": "current-run",
+                },
+                "summary": {
+                    "promotable_directions": [],
+                    "execution_ready_promoted_candidates": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
+def test_live_candidate_authorization_rescores_exact_setup(monkeypatch):
+    monkeypatch.setattr(scanner_main, "load_edge_index", lambda path: [object()])
+    scored = {
+        "direction": "bullish",
+        "recommendation": "reject",
+        "edge_score": 44.0,
+        "blocking_reasons": ["edge_score_below_promotion_threshold"],
+        "rejection_reasons": ["edge_score_below_promotion_threshold"],
+    }
+    monkeypatch.setattr(scanner_main, "_score_edge_for_bars", lambda *args, **kwargs: scored)
+    execution_ready = {"value": False}
+    monkeypatch.setattr(
+        scanner_main,
+        "candidate_execution_ready",
+        lambda candidate: execution_ready["value"],
+    )
+
+    result = scanner_main._authorize_live_candidate(
+        "TEST",
+        "bullish",
+        object(),
+        object(),
+        {"_live_promotable_directions": ("bullish",)},
+        logger=None,
+    )
+
+    assert result["authorized"] is False
+    assert result["edge_recommendation"] == "reject"
+
+    scored["recommendation"] = "promote"
+    scored["edge_score"] = 72.0
+    scored["blocking_reasons"] = []
+    scored["rejection_reasons"] = []
+    result = scanner_main._authorize_live_candidate(
+        "TEST",
+        "bullish",
+        object(),
+        object(),
+        {"_live_promotable_directions": ("bullish",)},
+        logger=None,
+    )
+
+    assert result["authorized"] is False
+    assert result["reason"] == "edge_execution_quality_not_ready"
+
+    execution_ready["value"] = True
+    result = scanner_main._authorize_live_candidate(
+        "TEST",
+        "bullish",
+        object(),
+        object(),
+        {"_live_promotable_directions": ("bullish",)},
+        logger=None,
+    )
+
+    assert result["authorized"] is True
+    assert result["edge_recommendation"] == "promote"

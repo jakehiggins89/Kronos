@@ -185,7 +185,7 @@ def test_missing_kronos_features_are_neutral_not_penalized():
     assert scoring["scorecard"]["kronos"] == 0.0
 
 
-def test_present_kronos_features_still_score():
+def test_present_kronos_features_remain_advisory():
     bars = _bars()
     pb = detect_potter_box("TEST", bars)
     kronos = {
@@ -200,4 +200,4 @@ def test_present_kronos_features_still_score():
 
     assert features["kronos_directional_agreement"] == 0.75
     scoring = score_edge_candidate(features, analogs=[])
-    assert scoring["scorecard"]["kronos"] > 0.0
+    assert scoring["scorecard"]["kronos"] == 0.0

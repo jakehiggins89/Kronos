@@ -65,14 +65,24 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
     rr_ratio = _finite_float(features.get("rr_ratio"))
     empty_space_score = _finite_float(features.get("empty_space_score"))
     potter_passed = bool(features.get("potter_passed"))
-    empty_space_passed = bool(features.get("empty_space_passed")) or empty_space_score > 0.0
+    if "empty_space_passed" in features:
+        empty_space_passed = bool(features.get("empty_space_passed"))
+    else:
+        # Older evidence rows predate the explicit pass flag. Reconstruct the
+        # same gate used by score_empty_space instead of treating a weak
+        # one-point score as a valid setup.
+        empty_space_passed = (
+            empty_space_score >= float(scanner_config.MIN_EMPTY_SPACE_SCORE)
+            and rr_ratio >= float(scanner_config.MIN_RR)
+        )
     setup_gate_passed = potter_passed or empty_space_passed
-    kronos_agreement = _finite_float(features.get("kronos_directional_agreement"), 0.5)
-    kronos_median = _finite_float(features.get("kronos_median_forecast_return_pct"))
     data_quality = _finite_float(features.get("data_quality_score"), 1.0)
     feed_confidence = _finite_float(features.get("feed_confidence"), 0.5)
     options_spread = _finite_float(features.get("options_spread_pct"))
     options_data_quality = _finite_float(features.get("options_data_quality"), 0.45)
+    options_spread_limit = float(scanner_config.MAX_ATM_BID_ASK_SPREAD_PCT)
+    options_passed = _finite_float(features.get("options_passed"), 1.0) >= 1.0
+    options_provider = str(features.get("options_data_provider") or "").strip()
     doctrine_v2 = 0.0
     if "doctrine_v2_score" in features:
         doctrine_score = _finite_float(features.get("doctrine_v2_score"))
@@ -93,11 +103,14 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         "doctrine_v2": doctrine_v2,
         "reward_risk": _clamp(rr_ratio * 4.0, 0.0, 12.0),
         "analog_expectancy": _clamp((summary["average_r_multiple"] * 25.0) + ((summary["win_rate"] - 0.5) * 20.0), -30.0, 35.0),
-        "kronos": _clamp(((kronos_agreement - 0.5) * 20.0) + _clamp(kronos_median, -5.0, 5.0), -12.0, 12.0),
+        # Kronos failed its preregistered production ranking gate. Keep its
+        # fields in the feature/report payload for continued measurement, but
+        # an advisory model must not move a setup across score thresholds.
+        "kronos": 0.0,
         "uncertainty": -_clamp(summary["return_std_pct"], 0.0, 12.0),
         "sample_penalty": -_clamp(max(min_analogs - summary["count"], 0) * 5.0, 0.0, 20.0),
         "data_quality": _clamp(((data_quality - 1.0) * 15.0) + ((feed_confidence - 0.5) * 10.0), -18.0, 6.0),
-        "options_liquidity": -_clamp(max(options_spread - 0.12, 0.0) * 100.0, 0.0, 10.0),
+        "options_liquidity": -_clamp(max(options_spread - options_spread_limit, 0.0) * 100.0, 0.0, 10.0),
         "options_data_quality": -_clamp(max(0.75 - options_data_quality, 0.0) * 20.0, 0.0, 8.0),
     }
     raw_score = sum(scorecard.values())
@@ -112,6 +125,8 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         and summary["average_r_multiple"] > 0.0
         and data_quality >= 0.5
         and feed_confidence >= 0.35
+        and options_passed
+        and options_spread <= options_spread_limit
         and options_data_quality >= 0.75
     ):
         recommendation = "promote"
@@ -131,10 +146,15 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         blocking_reasons.append("low_data_quality")
     if feed_confidence < 0.35:
         blocking_reasons.append("low_feed_confidence")
-    if options_spread > 0.12:
-        blocking_reasons.append("wide_options_spread")
-    if options_data_quality < 0.75:
-        blocking_reasons.append("options_data_not_execution_grade")
+    if "options_passed" in features and not options_passed:
+        blocking_reasons.append(
+            "options_no_liquid_contract" if options_provider else "options_provider_unavailable"
+        )
+    else:
+        if options_spread > options_spread_limit:
+            blocking_reasons.append("wide_options_spread")
+        if options_data_quality < 0.75:
+            blocking_reasons.append("options_data_not_execution_grade")
     if edge_score < 45.0:
         blocking_reasons.append("edge_score_below_research_threshold")
     elif edge_score < 65.0:

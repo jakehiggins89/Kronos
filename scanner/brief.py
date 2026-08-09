@@ -17,52 +17,130 @@ from . import config as scanner_config
 from .alerts.telegram import send_telegram_message
 from .config import REPORT_DIR
 
-# Plain-English translations for the audit's blocker/warning codes, with the
-# concrete fix so the brief always ends in an action, not a mood.
-_ISSUE_GUIDE = {
+# Plain-English translations for the audit's blocker/warning codes:
+# (phone-sized label, full explanation, the fix, needs_a_human).
+#
+# That last flag is the point of this table. A fault means the operator has to
+# do something; a finding is the system honestly reporting what it learned or
+# what the market looks like. Both used to render identically, so a normal quiet
+# day - the designed state - read like an outage every single morning.
+_ISSUE_GUIDE: dict[str, tuple[str, str, str, bool]] = {
     "validation_threshold_55_unsupported": (
+        "Score-55 gate has no signals (expected)",
         "The absolute score-55 gate has no supporting signals",
         "expected while scores stay compressed; the ranking gate is the realistic path",
+        False,
     ),
     "ranking_evidence_unsupported": (
+        "Score doesn't rank winners yet",
         "The score does not yet rank outcomes strongly enough out-of-sample",
         "keep daily research_ops running so walk-forward samples accumulate",
+        False,
+    ),
+    "validation_not_walk_forward": (
+        "Validation is leak-contaminated",
+        "Validation is not purged walk-forward, so the numbers may be leak-contaminated",
+        "do not trust these results; rebuild validation on the purged walk-forward path",
+        True,
+    ),
+    "future_analogs_allowed": (
+        "Future data leaked into validation",
+        "Analogs from the future leaked into validation",
+        "do not trust these results; rebuild the retrieval index with the purge enabled",
+        True,
+    ),
+    "options_no_liquid_contract": (
+        "No liquid options chain",
+        "Some names have no option strike that clears the spread and open-interest gates",
+        "nothing to fix - the chain is genuinely untradeable, which is normal for small caps",
+        False,
+    ),
+    "options_provider_unavailable": (
+        "Options data did not come from Tradier",
+        "Options data did not come from real-time Tradier: the scanner fell back to the "
+        "indicative pipeline, or the lookup failed outright",
+        "check TRADIER_API_TOKEN is the PRODUCTION token (not sandbox) and that Tradier is "
+        "reachable; scanner/logs/scanner.log has the underlying error",
+        True,
     ),
     "options_data_not_execution_grade": (
-        "Options quotes were below execution grade at scan time (stale/after-hours Tradier quotes, or the indicative fallback)",
-        "run research_ops during market hours so Tradier quotes are fresh; if this persists intraday, check TRADIER_API_TOKEN",
+        "Options quotes are stale",
+        "Real Tradier contracts were found, but their quotes were stale at scan time",
+        "run research_ops during market hours so Tradier quotes are fresh",
+        True,
     ),
     "options_liquidity_missing": (
+        "Some OI/volume fields are zero",
         "Open interest / volume / spread fields are missing or zero on some candidates",
-        "usually zero day-volume early in the session or a fallback quote; resolves on an intraday scan",
+        "usually zero day-volume early in the session; resolves on an intraday scan",
+        False,
     ),
     "low_feed_confidence": (
+        "Equity bars on the free IEX feed",
         "Equity bars come from the free IEX-only feed",
         "acceptable for research; full-SIP data (Alpaca ATP or Polygon Starter) clears it",
+        False,
+    ),
+    "delayed_equity_feed": (
+        "Equity bars are consolidated but delayed",
+        "At least one current candidate uses a deliberately delayed consolidated equity snapshot",
+        "acceptable for research; real-time consolidated bars are required for paper/live alerts",
+        False,
     ),
     "no_current_actionable_candidates": (
+        "No setups today (normal)",
         "Nothing on the watchlist is near a qualifying setup today",
         "normal; the scanner is supposed to be quiet most days",
+        False,
     ),
     "bearish_edge_negative": (
+        "Bearish blocked (loses money)",
         "Bearish setups have negative expectancy in validation",
         "bearish promotion stays blocked until bearish evidence turns positive",
+        False,
     ),
     "bullish_edge_negative": (
+        "Bullish blocked (loses money)",
         "Bullish setups have negative expectancy in validation",
         "bullish promotion stays blocked until bullish evidence turns positive",
+        False,
     ),
     "promoted_candidates_direction_blocked": (
+        "Promotions sit in an unproven direction",
         "Promotions exist only in directions without proven positive expectancy (negative, under-sampled, or absent validation cohort)",
         "treated as research-only until that direction proves itself",
+        False,
     ),
 }
+
+# Codes whose audit summary names the affected tickers; naming them turns a
+# vague warning into something checkable at a glance.
+_ISSUE_TICKERS = {
+    "options_no_liquid_contract": "no_liquid_options_contract_candidates",
+    "options_provider_unavailable": "options_provider_unavailable_candidates",
+    "options_data_not_execution_grade": "stale_options_quote_candidates",
+    "options_liquidity_missing": "missing_options_liquidity_candidates",
+    "low_feed_confidence": "low_feed_confidence_candidates",
+    "delayed_equity_feed": "delayed_equity_feed_candidates",
+}
+
+# The phone brief's UNLOCK block states these two in full, with the actual
+# numbers; repeating them under FYI just said the same thing twice.
+_UNLOCK_CODES = {"validation_threshold_55_unsupported", "ranking_evidence_unsupported"}
 
 _READINESS_LINE = {
     "blocked": "NOT live-ready. Evidence gates are failing; live alerting stays off.",
     "watch_only": "Evidence gates pass but nothing is actionable today. Watch only.",
     "research_only": "Evidence gates pass; research candidates only. No live alerts.",
     "paper_trade_only": "Evidence supports PAPER trading the promoted candidates. Still not real money.",
+}
+
+# The phone version: same truth, told as status rather than as a failure.
+_LIVE_LINE = {
+    "blocked": "Live alerts: off - evidence gates not met (expected).",
+    "watch_only": "Live alerts: off - gates pass, nothing actionable today.",
+    "research_only": "Live alerts: off - research candidates only.",
+    "paper_trade_only": "Live alerts: off - paper trading supported. Still not real money.",
 }
 
 
@@ -72,6 +150,29 @@ def _read_json(path: Path) -> dict:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _read_json_lines(path: Path) -> list[dict]:
+    """Best-effort JSONL reader for operator context.
+
+    The brief must remain available even if one journal line is malformed; the
+    journal-integrity stage owns repair and will surface the underlying issue.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    rows = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def _fmt(value: Any, digits: int = 2, missing: str = "n/a") -> str:
@@ -98,37 +199,91 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _percentage(value: Any, digits: int = 0) -> str:
+    try:
+        return _fmt(float(value) * 100, digits)
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+# A win rate over a handful of rows carries no information, but rendered as a
+# bare percentage it reads like a finding - "agree 100% (n=1)" invites the
+# operator to trust a filter that has been tested exactly once. Below this many
+# rows the brief reports the count and withholds the rate.
+MIN_ROWS_FOR_WIN_RATE = 10
+
+
+def _win_rate_summary(block: dict) -> str:
+    count = _int(block.get("signal_count"))
+    if count <= 0:
+        return "n/a (n=0)"
+    if count < MIN_ROWS_FOR_WIN_RATE:
+        return f"too few to rate (n={count})"
+    return f"{_fmt(_num(block.get('win_rate')) * 100, 0)}% (n={count})"
+
+
 def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines = []
+    cost_model = validation.get("cost_model")
+    if isinstance(cost_model, dict) and _num(cost_model.get("bps_per_side")) > 0:
+        lines.append(
+            f"- Cost basis: all figures NET of {_fmt(cost_model.get('bps_per_side'), 0)} bps/side "
+            f"round trip ({_fmt(cost_model.get('round_trip_return_pct_charged'), 2)} pct pts per trade)"
+        )
+    else:
+        lines.append("- Cost basis: MISSING -- gates are blocked until validation charges a round-trip cost")
     ranking = audit.get("checks", {}).get("ranking_evidence", {})
     value = ranking.get("value", {}) if isinstance(ranking.get("value"), dict) else {}
     status = "PASS" if ranking.get("passed") else "not yet"
+    raw_top_signals = _int(value.get("top_decile_signals"))
+    top_evidence_days = value.get("top_decile_evidence_days")
+    if top_evidence_days is None:
+        top_evidence = f"top-decile signals {raw_top_signals}/{_int(value.get('min_signals'), 20)}"
+    else:
+        top_evidence = (
+            f"top-decile evidence days {_int(top_evidence_days)}/{_int(value.get('min_signals'), 20)} "
+            f"({raw_top_signals} raw signals)"
+        )
+    precision_lower_bound = value.get(
+        "top_decile_precision_lower_bound",
+        value.get("top_decile_wilson_lb_precision"),
+    )
+    precision_label = "dependence-aware precision LB" if top_evidence_days is not None else "Wilson-LB precision"
     lines.append(
         f"- Ranking gate ({status}): rank IC {_fmt(value.get('rank_ic'), 3)} "
         f"(need >= {_fmt(value.get('min_rank_ic'), 2)}, p {_fmt(value.get('rank_ic_p_value'), 3)}), "
-        f"top-decile signals {_int(value.get('top_decile_signals'))}/{_int(value.get('min_signals'), 20)}, "
+        f"{top_evidence}, "
         f"avg R {_fmt(value.get('top_decile_average_r'))}, t {_fmt(value.get('top_decile_t_stat'))}, "
-        f"Wilson-LB precision {_fmt(value.get('top_decile_wilson_lb_precision'))} (need >= 0.45)"
+        f"{precision_label} {_fmt(precision_lower_bound)} (need >= 0.45)"
     )
     legacy = audit.get("checks", {}).get("validation_threshold", {})
     legacy_value = legacy.get("value", {}) if isinstance(legacy.get("value"), dict) else {}
     lines.append(
         f"- Legacy threshold-{legacy_value.get('threshold', 55)} gate "
         f"({'PASS' if legacy.get('passed') else 'not yet'}): "
-        f"{_int(legacy_value.get('signal_count'))}/{_int(legacy_value.get('min_signals'), 20)} signals"
+        f"{_int(legacy_value.get('signal_count'))}/{_int(legacy_value.get('min_signals'), 20)} "
+        f"{'evidence days' if legacy_value.get('raw_signal_count') is not None else 'signals'}"
     )
     directions = validation.get("by_direction", {})
     if isinstance(directions, dict) and directions:
         parts = []
         blocked = set(audit.get("summary", {}).get("blocked_directions", []))
+        unproven = set(audit.get("summary", {}).get("unproven_directions", []))
         for name in ("bullish", "bearish"):
             block = directions.get(name)
             if not isinstance(block, dict):
                 continue
-            tag = " BLOCKED" if name in blocked else ""
+            tag = " BLOCKED" if name in blocked else " UNPROVEN" if name in unproven else ""
+            clustered = block.get("t_stat_r_day_clustered")
+            if isinstance(clustered, dict):
+                sample_label = f"days={_int(clustered.get('n_days'))}"
+                average_r = clustered.get("mean_of_day_means")
+            else:
+                sample_label = f"n={_int(block.get('signal_count'))}"
+                average_r = block.get("average_r_multiple")
             parts.append(
-                f"{name} n={_int(block.get('signal_count'))} "
-                f"avgR {_fmt(block.get('average_r_multiple'))}{tag}"
+                f"{name} {sample_label} "
+                f"avgR {_fmt(average_r)}{tag}"
             )
         if parts:
             lines.append(f"- Directions: {'; '.join(parts)}")
@@ -155,8 +310,64 @@ def _scan_summary(scan: dict) -> list[str]:
     return lines
 
 
-def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
+def _today_research_samples(base: Path, today: str) -> list[dict]:
+    """Return today's accepted counterfactual samples, separate from Edge trades."""
+    samples: dict[tuple[str, str], dict] = {}
+    for row in _read_json_lines(base / "scan_decisions.jsonl"):
+        diagnostics = row.get("research_diagnostics")
+        is_candidate = row.get("skip_reason") == "research_candidate" or (
+            isinstance(diagnostics, dict) and diagnostics.get("passed") is True
+        )
+        if (
+            row.get("mode") != "research_scan"
+            or row.get("source_session_date") != today
+            or row.get("outcome_status") != "pending"
+            or not is_candidate
+        ):
+            continue
+        ticker = str(row.get("ticker") or "?")
+        direction = str(row.get("direction") or "unknown")
+        samples[(ticker, direction)] = {
+            "ticker": ticker,
+            "direction": direction,
+            "research_score": row.get("research_score"),
+            "doctrine_v2_score": row.get("doctrine_v2_score"),
+            "doctrine_v2_passed": bool(row.get("doctrine_v2_passed")),
+            "kronos_directional_agreement": row.get("kronos_directional_agreement"),
+            "kronos_passed": bool(row.get("kronos_passed")),
+        }
+    return list(samples.values())
+
+
+def _research_sample_summary(samples: list[dict]) -> list[str]:
+    if not samples:
+        return []
+    lines = [
+        f"- {len(samples)} counterfactual sample{'s' if len(samples) != 1 else ''} accepted for outcome tracking; "
+        "never alerted or traded."
+    ]
+    for row in samples:
+        doctrine_status = "pass" if row.get("doctrine_v2_passed") else "fail"
+        kronos_status = "pass" if row.get("kronos_passed") else "fail"
+        lines.append(
+            f"- {row.get('ticker')}: {row.get('direction')} research {_fmt(row.get('research_score'), 0)}; "
+            f"Doctrine v2 {_fmt(row.get('doctrine_v2_score'), 0)} {doctrine_status}; "
+            f"Kronos {_percentage(row.get('kronos_directional_agreement'))}% {kronos_status}."
+        )
+    return lines
+
+
+def _learning_summary(policy: dict, diagnostic: dict, audit: dict | None = None) -> list[str]:
     lines = []
+    # The research-threshold cohort and the validation cohort are different
+    # populations, and a direction can look strong in the former while being
+    # promotion-blocked by the latter. Printed side by side without this label,
+    # "bearish daily-WR=68%" reads as a green light for a blocked direction.
+    promotable = set()
+    if isinstance(audit, dict):
+        summary = audit.get("summary", {})
+        if isinstance(summary, dict):
+            promotable = {str(d) for d in summary.get("promotable_directions", []) or []}
     research = policy.get("research_candidates", {})
     lines.append(
         f"- Journal: {_int(research.get('resolved'))} resolved research candidates "
@@ -170,14 +381,37 @@ def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
         f"- Policy: {recommendation.get('status', 'unknown')} "
         f"(threshold {research.get('current_threshold', '?')}) -- {recommendation.get('reason', '')}"
     )
+    direction_blocks = research.get("current_threshold_by_direction", {})
+    if isinstance(direction_blocks, dict):
+        direction_parts = []
+        for direction in ("bullish", "bearish", "unknown"):
+            block = direction_blocks.get(direction)
+            if not isinstance(block, dict) or _int(block.get("signal_count")) <= 0:
+                continue
+            status = "" if direction in promotable or direction == "unknown" else " [NOT PROMOTABLE]"
+            if block.get("evidence_day_count") is not None:
+                direction_parts.append(
+                    f"{direction} rows={_int(block.get('signal_count'))} "
+                    f"days={_int(block.get('evidence_day_count'))} "
+                    f"daily-WR={_fmt(_num(block.get('mean_daily_win_rate')) * 100, 1)}% "
+                    f"LB={_fmt(_num(block.get('dependence_adjusted_win_rate_lower_bound')) * 100, 1)}% "
+                    f"avg-day={_fmt(block.get('average_daily_return_pct'))}%{status}"
+                )
+            else:
+                direction_parts.append(
+                    f"{direction} n={_int(block.get('signal_count'))} "
+                    f"{_int(block.get('wins'))}W/{_int(block.get('losses'))}L "
+                    f"avg {_fmt(block.get('average_return_pct'))}%{status}"
+                )
+        if direction_parts:
+            lines.append("- Threshold cohort by direction: " + "; ".join(direction_parts))
     lift = policy.get("kronos_lift", {})
     if _int(lift.get('rows_with_kronos')) > 0:
         agree = lift.get("agree", {})
         disagree = lift.get("disagree", {})
         lines.append(
             f"- Kronos lift: {_int(lift.get('rows_with_kronos'))} scored -- agree "
-            f"{_fmt(_num(agree.get('win_rate')) * 100, 0)}% WR (n={_int(agree.get('signal_count'))}) vs "
-            f"disagree {_fmt(_num(disagree.get('win_rate')) * 100, 0)}% WR (n={_int(disagree.get('signal_count'))})"
+            f"{_win_rate_summary(agree)} vs disagree {_win_rate_summary(disagree)}"
         )
     else:
         eval_errors = _int(lift.get("rows_with_eval_errors"))
@@ -197,30 +431,84 @@ def _learning_summary(policy: dict, diagnostic: dict) -> list[str]:
     return lines
 
 
-def _issues(audit: dict) -> list[str]:
-    lines = []
-    for code in list(audit.get("blockers", [])) + list(audit.get("warnings", [])):
-        explanation, fix = _ISSUE_GUIDE.get(str(code), (str(code), "see scanner/README.md"))
-        lines.append(f"- {code}: {explanation}. Fix: {fix}.")
+def _ticker_suffix(audit: dict, code: str, limit: int = 4) -> str:
+    key = _ISSUE_TICKERS.get(code)
+    if not key:
+        return ""
+    tickers = audit.get("summary", {}).get(key)
+    if not isinstance(tickers, list) or not tickers:
+        return ""
+    shown = ", ".join(str(t) for t in tickers[:limit])
+    extra = len(tickers) - limit
+    return f" ({shown}{f' +{extra} more' if extra > 0 else ''})"
+
+
+def _classify_issues(audit: dict, policy: dict) -> tuple[list[tuple], list[tuple]]:
+    """Split every reported code into (faults, findings).
+
+    Each entry is (code, short, explanation, fix). Faults need a human; findings
+    are the system reporting reality and need nothing.
+    """
+    faults: list[tuple] = []
+    findings: list[tuple] = []
+    tagged = [(str(code), True) for code in audit.get("blockers", [])]
+    tagged += [(str(code), False) for code in audit.get("warnings", [])]
+    for code, is_blocker in tagged:
+        if code in _ISSUE_GUIDE:
+            short, explanation, fix, is_fault = _ISSUE_GUIDE[code]
+        else:
+            # A code we have no translation for. An unrecognised BLOCKER is
+            # serious until proven otherwise - defaulting it to a finding would
+            # let a newly added gate render as "Nothing is broken".
+            short = explanation = code
+            fix = "unrecognised code - see scanner/README.md"
+            is_fault = is_blocker
+        suffix = _ticker_suffix(audit, code)
+        entry = (code, f"{short}{suffix}", f"{explanation}{suffix}", fix)
+        (faults if is_fault else findings).append(entry)
+
+    # Kronos "eval errors" surface only in the policy report, and the field
+    # holds both real exceptions and ordinary skips ("need 60 synthetic bars"),
+    # so the count alone cannot prove a fault. Report it as a finding and let
+    # the log say which it was, rather than calling a thin-history skip a
+    # model failure.
+    eval_errors = _int(policy.get("kronos_lift", {}).get("rows_with_eval_errors"))
+    if eval_errors > 0:
+        findings.append(
+            (
+                "kronos_no_forecast",
+                f"Kronos produced no forecast on {eval_errors} resolved candidates",
+                f"Kronos produced no forecast on {eval_errors} resolved candidates",
+                "usually too little bar history; if the count climbs, check "
+                "KRONOS_RESEARCH_EVAL_FAILED in scanner/logs/scanner.log",
+            )
+        )
+    return faults, findings
+
+
+def _issues(audit: dict, policy: dict) -> list[str]:
+    faults, findings = _classify_issues(audit, policy)
+    lines = [f"- NEEDS ACTION -- {code}: {explanation}. Fix: {fix}." for code, _short, explanation, fix in faults]
+    lines += [f"- {code}: {explanation}. No action: {fix}." for code, _short, explanation, fix in findings]
     return lines or ["- None. All gates green."]
 
 
 def _next_action(audit: dict, policy: dict) -> str:
-    warnings = set(audit.get("warnings", []))
-    blockers = set(audit.get("blockers", []))
     recommendation = policy.get("recommendation", {})
     if recommendation.get("status") == "loosen_research_threshold":
         return (
             "Confirm the pending research-threshold loosening on tomorrow's research_ops run "
             "so the journal starts refilling."
         )
-    if "options_data_not_execution_grade" in warnings:
+    faults, _findings = _classify_issues(audit, policy)
+    if faults:
+        _code, _short, explanation, fix = faults[0]
+        return f"{explanation}. Fix: {fix}."
+    if audit.get("blockers"):
         return (
-            "Run research_ops during market hours so Tradier quotes are fresh and the scan banks "
-            "execution-grade options evidence. If the flag persists intraday, check TRADIER_API_TOKEN."
+            "Nothing. Keep the daily research_ops cadence; the evidence gates need more "
+            "resolved samples."
         )
-    if blockers:
-        return "Keep the daily research_ops cadence; evidence gates need more resolved samples."
     return "Review promoted candidates and paper-trade them per the audit."
 
 
@@ -234,6 +522,12 @@ def build_daily_brief(report_dir: Path | None = None) -> tuple[str, dict]:
 
     readiness = str(audit.get("readiness", "unknown"))
     today = pd.Timestamp.now(tz="America/New_York").date().isoformat()
+    research_samples = _today_research_samples(base, today)
+    research_section = (
+        ["", "## Accepted research samples", *_research_sample_summary(research_samples)]
+        if research_samples
+        else []
+    )
 
     lines = [
         f"# Kronos Daily Brief -- {today}",
@@ -246,12 +540,13 @@ def build_daily_brief(report_dir: Path | None = None) -> tuple[str, dict]:
         "",
         "## Today's scan",
         *_scan_summary(scan),
+        *research_section,
         "",
         "## Learning loop",
-        *_learning_summary(policy, diagnostic),
+        *_learning_summary(policy, diagnostic, audit),
         "",
         "## Open issues",
-        *_issues(audit),
+        *_issues(audit, policy),
         "",
         "## Next action",
         f"{_next_action(audit, policy)}",
@@ -263,7 +558,16 @@ def build_daily_brief(report_dir: Path | None = None) -> tuple[str, dict]:
         "generated_at": pd.Timestamp.utcnow().isoformat(),
         "readiness": readiness,
         "next_action": _next_action(audit, policy),
-        "telegram_text": _telegram_text(today, readiness, audit, validation, policy, diagnostic, scan),
+        "research_samples": research_samples,
+        "telegram_text": _telegram_text(
+            today,
+            readiness,
+            audit,
+            policy,
+            diagnostic,
+            scan,
+            research_samples,
+        ),
     }
     return markdown, payload
 
@@ -272,58 +576,134 @@ def _telegram_text(
     today: str,
     readiness: str,
     audit: dict,
-    validation: dict,
     policy: dict,
     diagnostic: dict,
     scan: dict,
+    research_samples: list[dict],
 ) -> str:
-    """Condensed phone-sized brief. Status report only, never a trade alert."""
-    ranking = audit.get("checks", {}).get("ranking_evidence", {})
-    value = ranking.get("value", {}) if isinstance(ranking.get("value"), dict) else {}
-    blocked = list(audit.get("summary", {}).get("blocked_directions", []))
+    """Condensed phone-sized brief. Status report only, never a trade alert.
+
+    Ordered by what the operator actually needs: whether today requires them at
+    all, then trades, then progress, then everything that needs no action. The
+    old version opened with "Verdict: BLOCKED" every morning, which buried the
+    real answer ("nothing to do") under a word that reads like a breakage.
+    """
+    faults, findings = _classify_issues(audit, policy)
 
     candidates = [row for row in scan.get("candidates", []) if isinstance(row, dict)]
     actionable = [row for row in candidates if row.get("recommendation") in {"research", "promote"}]
-    scored = [row for row in candidates if row.get("edge_score") is not None]
-    best = scored[0] if scored else None
 
+    # Emoji only ever reach Telegram: the markdown brief (the one print()ed to a
+    # cp1252 Windows console) stays ASCII, and every report that embeds this text
+    # is logged through json.dumps, which escapes non-ASCII.
+    if readiness not in _LIVE_LINE:
+        # No readable audit. "No warnings" here means "we know nothing", which is
+        # not the same as "nothing is wrong" - saying OK would be a lie told
+        # precisely when the pipeline is most likely broken.
+        lines = [f"⚠️ KRONOS - {today}", "Can't tell - no readable audit."]
+    elif faults:
+        headline = f"{len(faults)} thing{'s' if len(faults) > 1 else ''} need{'' if len(faults) > 1 else 's'} you."
+        lines = [f"⚠️ KRONOS - {today}", headline]
+    else:
+        lines = [f"✅ KRONOS - {today}", "Nothing to do. Nothing is broken."]
+    lines.append(_LIVE_LINE.get(readiness, "Live alerts: off - run research_ops to rebuild the reports."))
+
+    if faults:
+        lines += ["", "DO THIS"]
+        for _code, short, _explanation, fix in faults:
+            lines.append(f"- {short}")
+            lines.append(f"  -> {fix}")
+
+    lines += ["", f"LIVE TRADES - {len(actionable) if actionable else 'none'}"]
+    scan_line = f"{len(candidates)} scanned, {len(actionable)} Edge-qualified"
+    lines.append(scan_line if actionable else f"{scan_line} (quiet by design)")
+    for row in actionable[:3]:
+        lines.append(
+            f"- {row.get('ticker')} {row.get('direction', '?')} edge {_fmt(row.get('edge_score'), 1)}"
+        )
+
+    if research_samples:
+        lines += ["", f"RESEARCH SAMPLES - {len(research_samples)} counterfactual only"]
+        for row in research_samples[:4]:
+            doctrine_status = "pass" if row.get("doctrine_v2_passed") else "fail"
+            kronos_status = "pass" if row.get("kronos_passed") else "fail"
+            lines.append(
+                f"- {row.get('ticker')} {row.get('direction')} score {_fmt(row.get('research_score'), 0)} "
+                f"(Doctrine {_fmt(row.get('doctrine_v2_score'), 0)} {doctrine_status}, "
+                f"Kronos {_percentage(row.get('kronos_directional_agreement'))}% {kronos_status})"
+            )
+        if len(research_samples) > 4:
+            lines.append(f"- (+{len(research_samples) - 4} more in daily_brief.md)")
+
+    lines += ["", *_unlock_block(audit, policy, diagnostic)]
+
+    notes = [entry for entry in findings if entry[0] not in _UNLOCK_CODES]
+    if notes:
+        lines += ["", "FYI - no action"]
+        lines += [f"- {short}" for _code, short, _explanation, _fix in notes[:5]]
+        # Say so rather than letting a trimmed list read as the whole story.
+        if len(notes) > 5:
+            lines.append(f"- (+{len(notes) - 5} more in daily_brief.md)")
+
+    return "\n".join(lines)
+
+
+def _unlock_block(audit: dict, policy: dict, diagnostic: dict) -> list[str]:
+    """How far the evidence gates are from unlocking, in one glance."""
+    ranking = audit.get("checks", {}).get("ranking_evidence", {})
+    value = ranking.get("value", {}) if isinstance(ranking.get("value"), dict) else {}
     research = policy.get("research_candidates", {})
-    recommendation = policy.get("recommendation", {})
     lift = policy.get("kronos_lift", {})
+
+    passed = bool(ranking.get("passed"))
+    lines = [f"UNLOCK - {'gates pass' if passed else 'not yet'}"]
+    lines.append(
+        f"Rank IC {_fmt(value.get('rank_ic'), 3)} (needs {_fmt(value.get('min_rank_ic'), 2)})"
+        + ("" if passed else " - score doesn't rank winners yet")
+    )
+    lines.append(
+        f"Journal {_int(research.get('resolved'))} resolved, "
+        f"{_fmt(_num(research.get('resolved_win_rate')) * 100, 0)}% WR, "
+        f"{_int(diagnostic.get('research_candidates', {}).get('pending'))} pending"
+    )
+    summary = audit.get("summary", {})
+    promotable = {str(d) for d in (summary.get("promotable_directions", []) or [])} if isinstance(summary, dict) else set()
+    direction_blocks = research.get("current_threshold_by_direction", {})
+    if isinstance(direction_blocks, dict):
+        direction_parts = []
+        for direction, label in (("bullish", "bull"), ("bearish", "bear")):
+            block = direction_blocks.get(direction)
+            if not isinstance(block, dict) or _int(block.get("signal_count")) <= 0:
+                continue
+            # Without this, a blocked direction's research cohort can read as a
+            # green light in the one place the operator actually looks.
+            status = "" if direction in promotable else " BLOCKED"
+            if block.get("evidence_day_count") is not None:
+                direction_parts.append(
+                    f"{label} rows={_int(block.get('signal_count'))} "
+                    f"days={_int(block.get('evidence_day_count'))} "
+                    f"dailyWR={_fmt(_num(block.get('mean_daily_win_rate')) * 100, 0)}% "
+                    f"LB={_fmt(_num(block.get('dependence_adjusted_win_rate_lower_bound')) * 100, 0)}% "
+                    f"avgDay={_fmt(block.get('average_daily_return_pct'), 1)}%{status}"
+                )
+            else:
+                direction_parts.append(
+                    f"{label} n={_int(block.get('signal_count'))} "
+                    f"{_int(block.get('wins'))}W/{_int(block.get('losses'))}L "
+                    f"avg {_fmt(block.get('average_return_pct'), 1)}%{status}"
+                )
+        if direction_parts:
+            lines.append(
+                f"Threshold {research.get('current_threshold', '?')} split: " + "; ".join(direction_parts)
+            )
     if _int(lift.get("rows_with_kronos")) > 0:
         agree = lift.get("agree", {})
         disagree = lift.get("disagree", {})
-        kronos_line = (
-            f"agree {_fmt(_num(agree.get('win_rate')) * 100, 0)}% WR (n={_int(agree.get('signal_count'))}) "
-            f"vs disagree {_fmt(_num(disagree.get('win_rate')) * 100, 0)}% WR (n={_int(disagree.get('signal_count'))})"
+        lines.append(
+            f"Kronos agree {_win_rate_summary(agree)}"
+            f" vs disagree {_win_rate_summary(disagree)}"
         )
-    elif _int(lift.get("rows_with_eval_errors")) > 0:
-        kronos_line = f"MODEL ERRORS on {_int(lift.get('rows_with_eval_errors'))} candidates - check scanner.log"
-    else:
-        kronos_line = "accumulating (no scored candidates resolved yet)"
-
-    lines = [
-        f"KRONOS DAILY BRIEF - {today}",
-        f"Verdict: {readiness.upper()} - {_READINESS_LINE.get(readiness, 'run research_ops first')}",
-        (
-            f"Gates: rank IC {_fmt(value.get('rank_ic'), 3)}/{_fmt(value.get('min_rank_ic'), 2)}, "
-            f"top-decile n={_int(value.get('top_decile_signals'))} avgR {_fmt(value.get('top_decile_average_r'))}"
-            + (f", blocked directions: {', '.join(blocked)}" if blocked else "")
-        ),
-        (
-            f"Scan: {len(candidates)} tickers, {len(actionable)} actionable"
-            + (f"; best {best.get('ticker')} {best.get('direction', '?')} {_fmt(best.get('edge_score'), 1)}" if best else "")
-        ),
-        (
-            f"Journal: {_int(research.get('resolved'))} resolved "
-            f"({_fmt(_num(research.get('resolved_win_rate')) * 100, 0)}% WR), "
-            f"{_int(diagnostic.get('research_candidates', {}).get('pending'))} pending | "
-            f"policy: {recommendation.get('status', 'unknown')}"
-        ),
-        f"Kronos: {kronos_line}",
-        f"NEXT: {_next_action(audit, policy)}",
-    ]
-    return "\n".join(lines)
+    return lines
 
 
 def run_brief(logger, report_dir: Path | None = None, telegram_env: dict | None = None) -> dict:

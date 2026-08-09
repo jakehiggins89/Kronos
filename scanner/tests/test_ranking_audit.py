@@ -76,9 +76,13 @@ def _scan(direction="bullish", recommendation="research"):
                 "recommendation": recommendation,
                 "features": {
                     "feed_confidence": 0.9,
+                    "data_delay_minutes": 0.0,
+                    "options_passed": 1.0,
                     "options_open_interest": 900.0,
                     "options_volume": 120.0,
                     "options_spread_pct": 0.05,
+                    "options_data_provider": "tradier",
+                    "options_data_feed": "opra-consolidated",
                     "options_data_quality": 0.9,
                 },
             }
@@ -90,16 +94,32 @@ def _validation_with_ranking(top_decile_signals=40, bearish_avg_r=0.1, bearish_n
     return {
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
+        "cost_model": {"bps_per_side": 25.0, "basis": "net_of_costs"},
         "thresholds": {
             "55": {"signal_count": 0, "precision": 0.0, "average_r_multiple": 0.0},
         },
-        "rank_ic_r": {"ic": 0.12, "p_value": 0.002, "n": 600},
+        "rank_ic_r": {
+            "ic": 0.12,
+            "p_value": 0.002,
+            "p_value_day_clustered": 0.003,
+            "n": 600,
+        },
         "percentiles": {
             "top_10_pct": {
                 "signal_count": top_decile_signals,
                 "average_r_multiple": 0.4,
                 "t_stat_r_multiple": 2.6,
                 "wilson_lb_precision": 0.48,
+                "precision_day_clustered": {
+                    "n_days": top_decile_signals,
+                    "mean_daily_precision": 0.6,
+                    "lower_bound": 0.48,
+                },
+                "t_stat_r_day_clustered": {
+                    "n_days": top_decile_signals,
+                    "mean_of_day_means": 0.4,
+                    "t_stat": 2.6,
+                },
             }
         },
         "by_direction": {
@@ -107,11 +127,16 @@ def _validation_with_ranking(top_decile_signals=40, bearish_avg_r=0.1, bearish_n
                 "signal_count": 300,
                 "average_r_multiple": 0.2,
                 "rank_ic_r": {"ic": 0.10, "p_value": 0.01, "p_value_day_clustered": 0.02, "n": 300},
+                "t_stat_r_day_clustered": {"t_stat": 2.5, "n_days": 60},
             },
             "bearish": {
                 "signal_count": bearish_n,
                 "average_r_multiple": bearish_avg_r,
                 "rank_ic_r": {"ic": 0.0, "p_value": 0.5, "p_value_day_clustered": 0.6, "n": bearish_n},
+                "t_stat_r_day_clustered": {
+                    "t_stat": 2.1 if bearish_avg_r > 0 else -2.1,
+                    "n_days": 20,
+                },
             },
         },
     }

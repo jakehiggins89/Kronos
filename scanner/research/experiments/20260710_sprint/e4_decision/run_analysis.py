@@ -11,9 +11,12 @@ Run: .\\venv\\Scripts\\python.exe scanner\\research\\experiments\\20260710_sprin
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
@@ -30,6 +33,7 @@ OUT_DIR = Path(__file__).resolve().parent
 TODAY = pd.Timestamp("2026-07-10", tz="UTC")
 SEED = 42
 N_BOOT = 2000
+BOOT_BLOCK_DAYS = 5
 K_VALUES = (10, 25, 33, 50)
 SLIPPAGE_BPS = (25, 50)
 
@@ -55,8 +59,11 @@ def wilson_ci_95(wins: int, n: int) -> dict:
 
 def one_sample_proportion_n(p0: float, p1: float, alpha: float = 0.05, power: float = 0.80) -> int:
     """Classic one-sample proportion sample size (unpooled variance), two-sided."""
-    z_a = 1.959963984540054  # alpha/2 = 0.025 two-sided
-    z_b = 0.8416212335729143  # power = 0.80
+    if not (0 < alpha < 1 and 0 < power < 1 and 0 < p0 < 1 and 0 < p1 < 1 and p0 != p1):
+        raise ValueError("alpha, power, p0, and p1 must define a non-degenerate proportion test")
+    normal = NormalDist()
+    z_a = normal.inv_cdf(1.0 - alpha / 2.0)
+    z_b = normal.inv_cdf(power)
     num = z_a * math.sqrt(p0 * (1 - p0)) + z_b * math.sqrt(p1 * (1 - p1))
     n = (num / (p1 - p0)) ** 2
     return math.ceil(n)
@@ -106,13 +113,14 @@ def task1_journal_honesty() -> dict:
             "p1_target_wr": round(p1, 4),
             "n_resolved_needed": n_needed,
             "weeks_at_12_per_week": weeks,
-            "earliest_detectable_date": earliest,
+            "assumption_bound_date": earliest,
+            "assumptions": "fixed p0, true effect exactly target delta, 12 independent resolutions/week",
         }
 
     headline = (
-        f"the journal cannot confirm any WR improvement before "
-        f"{targets['+5pp']['earliest_detectable_date']} (for +5pp) / "
-        f"{targets['+10pp']['earliest_detectable_date']} (for +10pp)"
+        f"under the stated fixed-baseline/12-per-week assumptions, the planned sample sizes are reached "
+        f"around {targets['+5pp']['assumption_bound_date']} (for +5pp) / "
+        f"{targets['+10pp']['assumption_bound_date']} (for +10pp)"
     )
 
     return {
@@ -208,7 +216,11 @@ def _bootstrap_deltas(
     top_wr_deltas, top_r_deltas = [], []
     bot_wr_deltas, bot_r_deltas = [], []
     for _ in range(n_boot):
-        drawn = rng.choice(len(days), size=len(days), replace=True)
+        drawn = []
+        while len(drawn) < len(days):
+            start = int(rng.integers(0, len(days)))
+            drawn.extend((start + offset) % len(days) for offset in range(BOOT_BLOCK_DAYS))
+        drawn = drawn[: len(days)]
         pooled: list[tuple] = []
         for idx in drawn:
             pooled.extend(rows_by_day[days[int(idx)]])
@@ -236,6 +248,8 @@ def _bootstrap_deltas(
         "bottom_wr_delta_ci95": pct(bot_wr_deltas),
         "bottom_avgR_delta_ci95": pct(bot_r_deltas),
         "n_boot_used": len(top_wr_deltas),
+        "bootstrap_method": "circular_moving_entry_day_blocks",
+        "bootstrap_block_days": BOOT_BLOCK_DAYS,
     }
 
 
@@ -340,7 +354,7 @@ def task4_bearish_check(records) -> dict:
 # ---------------------------------------------------------------------------
 
 def task5_cost_reality(bullish_df: pd.DataFrame) -> dict:
-    out = {"assumptions": (
+    out = {"classification": "fixed-return-subtraction sensitivity scenario; not an execution/slippage model", "assumptions": (
         "adjusted_return_pct = outcome_return_pct - 2*slippage_decimal*100 "
         "(entry leg + exit leg, both against the trade direction, on the underlying price move, "
         "in percentage points). adjusted_r = clip(adjusted_return_pct / risk_pct_used, -10, 10) using the "
@@ -371,6 +385,14 @@ def task5_cost_reality(bullish_df: pd.DataFrame) -> dict:
     return out
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -399,11 +421,24 @@ def main() -> None:
     results = {
         "run_metadata": {
             "date": "2026-07-10",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "n_index_records_total": len(records),
             "n_bullish": len(bullish_records),
             "n_bearish": sum(1 for r in records if r.direction == "bearish"),
             "seed": SEED,
             "n_boot": N_BOOT,
+            "bootstrap_block_days": BOOT_BLOCK_DAYS,
+            "input_sha256": {
+                "edge_index": sha256_file(Path(EDGE_INDEX_PATH)),
+                "journal": sha256_file(JOURNAL_PATH),
+            },
+            "protocol_sha256": {
+                "preregistration": sha256_file(OUT_DIR / "preregistration.json"),
+                "runner": sha256_file(Path(__file__)),
+                "calibration": sha256_file(REPO_ROOT / "scanner" / "edge" / "calibration.py"),
+                "stats": sha256_file(REPO_ROOT / "scanner" / "edge" / "stats.py"),
+            },
+            "reproduction_note": "Exact reproduction requires every listed hash to match; record counts alone are insufficient.",
         },
         "task1_journal_honesty": task1_journal_honesty(),
         "task2_take_all_baseline": task2_take_all_baseline(bullish_df),

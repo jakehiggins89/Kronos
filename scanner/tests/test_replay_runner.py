@@ -48,3 +48,5 @@ def test_replay_eval_includes_stage_details(tmp_path):
     assert payload["details"][0]["stage"] in {"called", "potter_box", "empty_space"}
     assert "reason" in payload["details"][0]
     assert "potter_passed" in payload["details"][0]
+    report = tmp_path / "reports" / "replay_eval_report.json"
+    assert json.loads(report.read_text(encoding="utf-8"))["dataset"] == str(dataset)

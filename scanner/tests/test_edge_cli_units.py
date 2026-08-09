@@ -229,6 +229,8 @@ def test_data_provenance_reads_bar_metadata():
         "data_provider": "alpaca",
         "data_feed": "sip",
         "data_delay_minutes": 16,
+        "latest_source_timestamp": "2026-02-14T00:00:00-05:00",
+        "source_session_date": "2026-02-14",
     }
 
 
@@ -294,6 +296,8 @@ def test_research_scan_decision_records_doctrine_v2(monkeypatch):
     assert captured
     assert "doctrine_v2_score" in captured[0]
     assert "doctrine_v2_diagnostics" in captured[0]
+    assert captured[0]["source_session_date"] == "2026-02-14"
+    assert "latest_source_timestamp" in captured[0]
 
 
 def test_watchlist_scan_reports_runtime_metadata(monkeypatch):

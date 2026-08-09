@@ -1,10 +1,12 @@
 import numpy as np
 
 from scanner.edge.stats import (
+    day_clustered_precision,
     day_clustered_t,
     spearman_rank_ic,
     tail_retention,
     tercile_lift,
+    t_statistic,
 )
 
 
@@ -25,6 +27,34 @@ def test_day_clustered_t_uses_days_not_trades():
     assert result["n_days"] == 2
     # 2 day-means -> t is computable but tiny-n; the point is n_days honesty.
     assert result["mean_of_day_means"] == 0.75
+    assert result["method"] == "entry_day_mean_hac_lag5"
+
+
+def test_day_clustered_t_accounts_for_serially_overlapping_outcomes():
+    # Smooth day-level returns are strongly serially correlated. Treating the
+    # 30 daily means as IID materially overstates the evidence.
+    day_values = [0.6 + 0.25 * np.sin(i / 4.0) for i in range(30)]
+    values = [value for value in day_values for _ in range(4)]
+    days = [f"2026-01-{i + 1:02d}" for i in range(30) for _ in range(4)]
+
+    result = day_clustered_t(values, days)
+
+    assert result["n_days"] == 30
+    assert result["t_stat"] < t_statistic(day_values)
+
+
+def test_day_clustered_precision_does_not_count_correlated_trades_as_iid():
+    # Two entry days, not 200 independent Bernoulli trials.
+    wins = [1.0] * 100 + [0.0] * 100
+    days = ["2026-01-05"] * 100 + ["2026-01-06"] * 100
+
+    result = day_clustered_precision(wins, days)
+
+    assert result["signal_count"] == 200
+    assert result["n_days"] == 2
+    assert result["mean_daily_precision"] == 0.5
+    assert result["lower_bound"] < 0.5
+    assert result["method"] == "entry_day_mean_hac_lag5_min_wilson"
 
 
 def test_spearman_day_clustered_p_is_more_conservative():
@@ -33,7 +63,7 @@ def test_spearman_day_clustered_p_is_more_conservative():
     assert result["n"] == 120
     assert result["n_days"] == 20
     assert result["p_value_day_clustered"] >= result["p_value"]
-    assert result["day_cluster_method"] == "one_way_entry_day_cluster_robust_cr1"
+    assert result["day_cluster_method"] == "entry_day_cluster_hac_lag5_cr1"
     assert result["p_value_alternative"] == "greater"
 
 
@@ -90,6 +120,8 @@ def test_tercile_lift_is_deterministic():
     a = tercile_lift(scores, outcomes, days, row_ids=ids)
     b = tercile_lift(scores, outcomes, days, row_ids=ids)
     assert a == b
+    assert a["bootstrap_method"] == "circular_moving_entry_day_blocks"
+    assert a["bootstrap_block_days"] == 5
 
 
 def test_tercile_lift_mass_ties_do_not_bias_by_input_order():
