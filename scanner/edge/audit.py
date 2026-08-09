@@ -294,12 +294,32 @@ def compute_edge_audit_report(
             within_direction_passed = True
 
     # A validation report computed gross of costs describes an edge nobody can
-    # capture, so it must never satisfy a promotion gate. Reports predating the
-    # cost model carry no `cost_model` block and fail closed here too.
+    # capture, so it must never satisfy a promotion gate. Do not trust a bare
+    # positive cost number: the report must also identify the net basis, carry
+    # the exact round-trip charge implied by that number, and state that return,
+    # R and win/loss metrics were all recomputed. That makes malformed, stale or
+    # partially migrated report artifacts fail closed instead of certifying
+    # gross gate metrics with a decorative `bps_per_side` stamp.
     cost_model = validation_report.get("cost_model")
     cost_model = cost_model if isinstance(cost_model, dict) else {}
     cost_bps_per_side = _finite_float(cost_model.get("bps_per_side"))
-    costs_charged = cost_bps_per_side > 0.0
+    cost_round_trip_pct = _finite_float(cost_model.get("round_trip_return_pct_charged"))
+    expected_round_trip_pct = 2.0 * cost_bps_per_side / 100.0
+    applies_to = cost_model.get("applies_to")
+    applies_to = (
+        {str(value) for value in applies_to}
+        if isinstance(applies_to, (list, tuple, set))
+        else set()
+    )
+    required_cost_metrics = {"returns", "r_multiple", "win_loss_label"}
+    cost_basis_valid = str(cost_model.get("basis") or "") == "net_of_costs"
+    cost_charge_consistent = (
+        cost_bps_per_side > 0.0
+        and _is_finite_number(cost_model.get("round_trip_return_pct_charged"))
+        and math.isclose(cost_round_trip_pct, expected_round_trip_pct, rel_tol=1e-9, abs_tol=1e-9)
+    )
+    cost_metrics_complete = required_cost_metrics.issubset(applies_to)
+    costs_charged = cost_basis_valid and cost_charge_consistent and cost_metrics_complete
 
     ranking_passed = (
         costs_charged
@@ -332,8 +352,17 @@ def compute_edge_audit_report(
         "costs_charged": _check(
             "costs_charged",
             costs_charged,
-            "Gate metrics must be net of a non-zero round-trip transaction cost.",
-            {"bps_per_side": cost_bps_per_side, "basis": cost_model.get("basis")},
+            "Gate metrics must carry complete, internally consistent provenance for a non-zero net transaction cost.",
+            {
+                "bps_per_side": cost_bps_per_side,
+                "round_trip_return_pct_charged": cost_round_trip_pct,
+                "expected_round_trip_return_pct": expected_round_trip_pct,
+                "basis": cost_model.get("basis"),
+                "applies_to": sorted(applies_to),
+                "basis_valid": cost_basis_valid,
+                "charge_consistent": cost_charge_consistent,
+                "required_metrics_present": cost_metrics_complete,
+            },
         ),
         "future_analogs_blocked": _check(
             "future_analogs_blocked",

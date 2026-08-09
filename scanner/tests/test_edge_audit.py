@@ -1,6 +1,14 @@
 from scanner.edge.audit import compute_edge_audit_report
 
 
+_NET_COST_MODEL = {
+    "bps_per_side": 25.0,
+    "round_trip_return_pct_charged": 0.5,
+    "basis": "net_of_costs",
+    "applies_to": ["returns", "r_multiple", "win_loss_label"],
+}
+
+
 def test_edge_audit_blocks_when_walk_forward_validation_has_no_supported_threshold():
     validation = {
         "validation_method": "purged_walk_forward",
@@ -38,7 +46,7 @@ def test_edge_audit_allows_research_only_when_validation_and_candidate_quality_p
     validation = {
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
-        "cost_model": {"bps_per_side": 25.0, "basis": "net_of_costs"},
+        "cost_model": dict(_NET_COST_MODEL),
         "thresholds": {
             "55": {
                 "signal_count": 25,
@@ -121,7 +129,7 @@ def _ranking_validation(within_bullish_ic=None):
     return {
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
-        "cost_model": {"bps_per_side": 25.0, "basis": "net_of_costs"},
+        "cost_model": dict(_NET_COST_MODEL),
         "thresholds": {"55": {"signal_count": 0, "precision": 0.0, "average_r_multiple": 0.0}},
         "rank_ic_r": {
             "ic": 0.12,
@@ -180,6 +188,25 @@ def test_otherwise_passing_ranking_evidence_is_blocked_when_costs_were_not_charg
             validation.pop("cost_model")  # a report predating the cost model
         else:
             validation["cost_model"] = cost_model
+
+        report = compute_edge_audit_report(validation, _EMPTY_SCAN)
+
+        assert report["checks"]["costs_charged"]["passed"] is False
+        assert report["checks"]["ranking_evidence"]["passed"] is False
+        assert report["readiness"] == "blocked"
+
+
+def test_positive_cost_stamp_needs_complete_consistent_net_provenance():
+    """A positive number alone must not certify that gate metrics are net."""
+    malformed_models = [
+        {**_NET_COST_MODEL, "basis": "gross"},
+        {key: value for key, value in _NET_COST_MODEL.items() if key != "round_trip_return_pct_charged"},
+        {**_NET_COST_MODEL, "round_trip_return_pct_charged": 0.05},
+        {**_NET_COST_MODEL, "applies_to": ["returns"]},
+    ]
+    for cost_model in malformed_models:
+        validation = _ranking_validation(within_bullish_ic=0.10)
+        validation["cost_model"] = cost_model
 
         report = compute_edge_audit_report(validation, _EMPTY_SCAN)
 

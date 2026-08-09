@@ -94,7 +94,12 @@ def _validation_with_ranking(top_decile_signals=40, bearish_avg_r=0.1, bearish_n
     return {
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
-        "cost_model": {"bps_per_side": 25.0, "basis": "net_of_costs"},
+        "cost_model": {
+            "bps_per_side": 25.0,
+            "round_trip_return_pct_charged": 0.5,
+            "basis": "net_of_costs",
+            "applies_to": ["returns", "r_multiple", "win_loss_label"],
+        },
         "thresholds": {
             "55": {"signal_count": 0, "precision": 0.0, "average_r_multiple": 0.0},
         },

@@ -22,6 +22,9 @@ def test_compute_edge_validation_report_threshold_and_topk_metrics():
     block = report["thresholds"]["50"]
     assert block["average_return_pct"] < block["average_gross_return_pct"]
     assert report["cost_model"]["bps_per_side"] == 5.0
+    assert report["cost_model"]["round_trip_return_pct_charged"] == 0.1
+    assert report["cost_model"]["basis"] == "net_of_costs"
+    assert set(report["cost_model"]["applies_to"]) == {"returns", "r_multiple", "win_loss_label"}
 
 
 def test_costs_are_charged_before_every_gate_metric():
