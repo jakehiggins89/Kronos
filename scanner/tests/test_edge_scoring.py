@@ -22,9 +22,9 @@ def _features():
 
 def test_score_edge_candidate_promotes_positive_analog_expectancy():
     analogs = [
-        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
-        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
-        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "risk_pct_used": 2.142857, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "risk_pct_used": 2.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "risk_pct_used": 2.333333, "mae_pct": -1.2, "mfe_pct": 1.0},
     ]
 
     result = score_edge_candidate(_features(), analogs, min_analogs=3)
@@ -33,6 +33,51 @@ def test_score_edge_candidate_promotes_positive_analog_expectancy():
     assert result["recommendation"] == "promote"
     assert result["scorecard"]["analog_expectancy"] > 0
     assert result["analog_summary"]["count"] == 3
+
+
+def test_score_edge_candidate_charges_costs_before_analog_expectancy():
+    # Three tiny gross wins are all net losses after the strategy's committed
+    # 25 bps/side execution basis. Candidate scoring must see the same net
+    # economics as readiness validation instead of promoting a gross-only edge.
+    analogs = [
+        {
+            "outcome_label": "win",
+            "outcome_return_pct": 0.2,
+            "r_multiple": 0.2,
+            "risk_pct_used": 1.0,
+            "mae_pct": -0.2,
+            "mfe_pct": 0.3,
+        }
+        for _ in range(3)
+    ]
+
+    result = score_edge_candidate(_features(), analogs, min_analogs=3)
+
+    assert result["analog_summary"]["average_return_pct"] == -0.3
+    assert result["analog_summary"]["average_r_multiple"] == -0.3
+    assert result["analog_summary"]["win_rate"] == 0.0
+    assert result["recommendation"] != "promote"
+    assert "non_positive_analog_expectancy" in result["blocking_reasons"]
+
+
+def test_score_edge_candidate_blocks_promotion_without_analog_risk_basis():
+    analogs = [
+        {
+            "outcome_label": "win",
+            "outcome_return_pct": 3.0,
+            "r_multiple": 1.4,
+            "mae_pct": -0.6,
+            "mfe_pct": 4.0,
+        }
+        for _ in range(3)
+    ]
+
+    result = score_edge_candidate(_features(), analogs, min_analogs=3)
+
+    assert result["edge_score"] >= 65
+    assert result["recommendation"] != "promote"
+    assert result["analog_cost_model"]["risk_coverage_complete"] is False
+    assert "analog_cost_basis_incomplete" in result["blocking_reasons"]
 
 
 def test_kronos_advisory_evidence_cannot_change_edge_score_or_promotion():
@@ -153,9 +198,9 @@ def test_score_edge_candidate_explains_reject_reasons():
     features["options_data_quality"] = 0.45
     features["options_spread_pct"] = 0.22
     analogs = [
-        {"outcome_label": "loss", "outcome_return_pct": -3.0, "r_multiple": -1.2, "mae_pct": -4.0, "mfe_pct": 0.5},
-        {"outcome_label": "loss", "outcome_return_pct": -1.0, "r_multiple": -0.6, "mae_pct": -2.0, "mfe_pct": 0.7},
-        {"outcome_label": "win", "outcome_return_pct": 0.3, "r_multiple": 0.1, "mae_pct": -1.5, "mfe_pct": 1.0},
+        {"outcome_label": "loss", "outcome_return_pct": -3.0, "r_multiple": -1.2, "risk_pct_used": 2.5, "mae_pct": -4.0, "mfe_pct": 0.5},
+        {"outcome_label": "loss", "outcome_return_pct": -1.0, "r_multiple": -0.6, "risk_pct_used": 1.666667, "mae_pct": -2.0, "mfe_pct": 0.7},
+        {"outcome_label": "win", "outcome_return_pct": 0.3, "r_multiple": 0.1, "risk_pct_used": 3.0, "mae_pct": -1.5, "mfe_pct": 1.0},
     ]
 
     result = score_edge_candidate(features, analogs, min_analogs=3)
@@ -189,9 +234,9 @@ def test_score_edge_candidate_does_not_promote_spread_above_current_limit(monkey
     features = _features()
     features["options_spread_pct"] = 0.10
     analogs = [
-        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "mae_pct": -0.6, "mfe_pct": 4.0},
-        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "mae_pct": -0.8, "mfe_pct": 3.0},
-        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "mae_pct": -1.2, "mfe_pct": 1.0},
+        {"outcome_label": "win", "outcome_return_pct": 3.0, "r_multiple": 1.4, "risk_pct_used": 2.142857, "mae_pct": -0.6, "mfe_pct": 4.0},
+        {"outcome_label": "win", "outcome_return_pct": 2.0, "r_multiple": 1.0, "risk_pct_used": 2.0, "mae_pct": -0.8, "mfe_pct": 3.0},
+        {"outcome_label": "loss", "outcome_return_pct": -0.7, "r_multiple": -0.3, "risk_pct_used": 2.333333, "mae_pct": -1.2, "mfe_pct": 1.0},
     ]
     monkeypatch.setattr(config, "MAX_ATM_BID_ASK_SPREAD_PCT", 0.08)
 

@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from .. import config as scanner_config
+from .validation import apply_transaction_costs
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -59,8 +60,19 @@ def _analog_summary(analogs: list[dict]) -> dict[str, float]:
 
 
 def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int = 5) -> dict:
-    """Score a candidate with transparent components and conservative promotion rules."""
-    summary = _analog_summary(analogs)
+    """Score a candidate with transparent components and conservative promotion rules.
+
+    Stored retrieval outcomes are gross. Charge the same committed transaction
+    cost used by validation before analog expectancy affects a score or a
+    promotion; otherwise candidate selection and readiness evaluate different
+    strategies.
+    """
+    gross_summary = _analog_summary(analogs)
+    cost_bps_per_side = abs(_finite_float(scanner_config.EDGE_COST_BPS_PER_SIDE))
+    net_analogs = apply_transaction_costs(analogs, cost_bps_per_side)
+    summary = _analog_summary(net_analogs)
+    cost_risk_rows = sum(1 for row in analogs if _finite_float(row.get("risk_pct_used")) > 0.0)
+    cost_basis_complete = bool(analogs) and cost_risk_rows == len(analogs)
     research_score = _finite_float(features.get("research_score"))
     rr_ratio = _finite_float(features.get("rr_ratio"))
     empty_space_score = _finite_float(features.get("empty_space_score"))
@@ -123,6 +135,8 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         and setup_gate_passed
         and summary["count"] >= min_analogs
         and summary["average_r_multiple"] > 0.0
+        and cost_bps_per_side > 0.0
+        and cost_basis_complete
         and data_quality >= 0.5
         and feed_confidence >= 0.35
         and options_passed
@@ -142,6 +156,10 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         blocking_reasons.append("insufficient_analogs")
     if summary["average_r_multiple"] <= 0.0:
         blocking_reasons.append("non_positive_analog_expectancy")
+    if cost_bps_per_side <= 0.0:
+        blocking_reasons.append("analog_costs_not_charged")
+    elif analogs and not cost_basis_complete:
+        blocking_reasons.append("analog_cost_basis_incomplete")
     if data_quality < 0.5:
         blocking_reasons.append("low_data_quality")
     if feed_confidence < 0.35:
@@ -167,6 +185,16 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         "recommendation": recommendation,
         "scorecard": {key: round(float(value), 4) for key, value in scorecard.items()},
         "analog_summary": summary,
+        "gross_analog_summary": gross_summary,
+        "analog_cost_model": {
+            "bps_per_side": cost_bps_per_side,
+            "round_trip_return_pct_charged": round(2.0 * cost_bps_per_side / 100.0, 6),
+            "basis": "net_of_costs" if cost_bps_per_side > 0.0 else "gross",
+            "risk_coverage_rows": cost_risk_rows,
+            "analog_rows": len(analogs),
+            "risk_coverage_complete": cost_basis_complete,
+            "applies_to": ["returns", "r_multiple", "win_loss_label"],
+        },
         "blocking_reasons": blocking_reasons,
         "rejection_reasons": rejection_reasons,
     }

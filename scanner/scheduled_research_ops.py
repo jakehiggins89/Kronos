@@ -107,12 +107,6 @@ def run_scheduled_research_ops(
         "report_path": str(report_path.resolve()),
     }
 
-    if completed_for_market_date(report_path, market_date):
-        status = {**base_status, "status": "skipped_already_complete", "exit_code": 0}
-        atomic_write_json(status_path, status)
-        print(f"Research ops already complete for {market_date}; recovery launch skipped.")
-        return 0
-
     try:
         session_window = session_window_lookup(market_date)
     except Exception as exc:
@@ -148,6 +142,16 @@ def run_scheduled_research_ops(
         atomic_write_json(status_path, status)
         print(f"Invalid NYSE session window for {market_date}; research ops blocked.")
         return 1
+    if completed_for_market_date(report_path, market_date):
+        status = {
+            **base_status,
+            **session_status,
+            "status": "skipped_already_complete",
+            "exit_code": 0,
+        }
+        atomic_write_json(status_path, status)
+        print(f"Research ops already complete for {market_date}; recovery launch skipped.")
+        return 0
     if not market_open <= started_at < market_close:
         status = {
             **base_status,

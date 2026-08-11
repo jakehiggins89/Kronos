@@ -57,7 +57,10 @@ def test_scheduled_runner_skips_recovery_after_current_market_day_completed(tmp_
 
     assert exit_code == 0
     assert calls == []
-    assert json.loads(status_path.read_text(encoding="utf-8"))["status"] == "skipped_already_complete"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "skipped_already_complete"
+    assert status["market_open_at"] == "2026-08-05T13:30:00+00:00"
+    assert status["market_close_at"] == "2026-08-05T20:00:00+00:00"
 
 
 def test_scheduled_runner_retries_stale_report_and_requires_completion(tmp_path):
