@@ -122,6 +122,9 @@ def compute_edge_validation_report(
     cost_bps_per_side: float = 0.0,
 ) -> dict:
     rows = [dict(row) for row in candidates]
+    candidate_rows = len(rows)
+    risk_coverage_rows = sum(1 for row in rows if _finite_float(row.get("risk_pct_used")) > 0.0)
+    risk_coverage_complete = candidate_rows > 0 and risk_coverage_rows == candidate_rows
     # Charge costs FIRST. Everything below - precision, average R, rank IC,
     # the day-clustered t-stats - then reads the net outcome by construction,
     # so no gate can be passed on gross expectancy.
@@ -217,6 +220,9 @@ def compute_edge_validation_report(
             "bps_per_side": _finite_float(cost_bps_per_side),
             "round_trip_return_pct_charged": round(2.0 * abs(_finite_float(cost_bps_per_side)) / 100.0, 6),
             "basis": "net_of_costs",
+            "candidate_rows": candidate_rows,
+            "risk_coverage_rows": risk_coverage_rows,
+            "risk_coverage_complete": risk_coverage_complete,
             "applies_to": ["returns", "r_multiple", "win_loss_label"],
         },
     }

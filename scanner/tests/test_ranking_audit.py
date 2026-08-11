@@ -92,12 +92,16 @@ def _scan(direction="bullish", recommendation="research"):
 
 def _validation_with_ranking(top_decile_signals=40, bearish_avg_r=0.1, bearish_n=20):
     return {
+        "samples": 600,
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
         "cost_model": {
             "bps_per_side": 25.0,
             "round_trip_return_pct_charged": 0.5,
             "basis": "net_of_costs",
+            "candidate_rows": 600,
+            "risk_coverage_rows": 600,
+            "risk_coverage_complete": True,
             "applies_to": ["returns", "r_multiple", "win_loss_label"],
         },
         "thresholds": {

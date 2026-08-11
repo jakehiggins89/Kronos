@@ -296,10 +296,11 @@ def compute_edge_audit_report(
     # A validation report computed gross of costs describes an edge nobody can
     # capture, so it must never satisfy a promotion gate. Do not trust a bare
     # positive cost number: the report must also identify the net basis, carry
-    # the exact round-trip charge implied by that number, and state that return,
-    # R and win/loss metrics were all recomputed. That makes malformed, stale or
-    # partially migrated report artifacts fail closed instead of certifying
-    # gross gate metrics with a decorative `bps_per_side` stamp.
+    # the exact round-trip charge implied by that number, state that return, R
+    # and win/loss metrics were all recomputed, and prove that every R row had
+    # the stop-distance denominator needed to recompute it. That makes malformed,
+    # stale or partially migrated report artifacts fail closed instead of
+    # certifying gross gate metrics with a decorative `bps_per_side` stamp.
     cost_model = validation_report.get("cost_model")
     cost_model = cost_model if isinstance(cost_model, dict) else {}
     cost_bps_per_side = _finite_float(cost_model.get("bps_per_side"))
@@ -319,7 +320,37 @@ def compute_edge_audit_report(
         and math.isclose(cost_round_trip_pct, expected_round_trip_pct, rel_tol=1e-9, abs_tol=1e-9)
     )
     cost_metrics_complete = required_cost_metrics.issubset(applies_to)
-    costs_charged = cost_basis_valid and cost_charge_consistent and cost_metrics_complete
+    candidate_rows_value = cost_model.get("candidate_rows")
+    risk_coverage_rows_value = cost_model.get("risk_coverage_rows")
+    report_samples_value = validation_report.get("samples")
+    coverage_counts_present = all(
+        not isinstance(value, bool) and _is_finite_number(value)
+        for value in (candidate_rows_value, risk_coverage_rows_value, report_samples_value)
+    )
+    candidate_rows = int(_finite_float(candidate_rows_value)) if coverage_counts_present else 0
+    risk_coverage_rows = int(_finite_float(risk_coverage_rows_value)) if coverage_counts_present else 0
+    report_samples = int(_finite_float(report_samples_value)) if coverage_counts_present else 0
+    coverage_counts_are_whole = coverage_counts_present and all(
+        value >= 0.0 and math.isclose(value, round(value), rel_tol=0.0, abs_tol=1e-9)
+        for value in (
+            _finite_float(candidate_rows_value),
+            _finite_float(risk_coverage_rows_value),
+            _finite_float(report_samples_value),
+        )
+    )
+    cost_risk_coverage_complete = (
+        coverage_counts_are_whole
+        and cost_model.get("risk_coverage_complete") is True
+        and candidate_rows > 0
+        and candidate_rows == report_samples
+        and risk_coverage_rows == candidate_rows
+    )
+    costs_charged = (
+        cost_basis_valid
+        and cost_charge_consistent
+        and cost_metrics_complete
+        and cost_risk_coverage_complete
+    )
 
     ranking_passed = (
         costs_charged
@@ -362,6 +393,10 @@ def compute_edge_audit_report(
                 "basis_valid": cost_basis_valid,
                 "charge_consistent": cost_charge_consistent,
                 "required_metrics_present": cost_metrics_complete,
+                "candidate_rows": candidate_rows,
+                "risk_coverage_rows": risk_coverage_rows,
+                "report_samples": report_samples,
+                "risk_coverage_complete": cost_risk_coverage_complete,
             },
         ),
         "future_analogs_blocked": _check(

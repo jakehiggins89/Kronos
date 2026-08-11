@@ -24,6 +24,9 @@ def test_compute_edge_validation_report_threshold_and_topk_metrics():
     assert report["cost_model"]["bps_per_side"] == 5.0
     assert report["cost_model"]["round_trip_return_pct_charged"] == 0.1
     assert report["cost_model"]["basis"] == "net_of_costs"
+    assert report["cost_model"]["candidate_rows"] == 4
+    assert report["cost_model"]["risk_coverage_rows"] == 0
+    assert report["cost_model"]["risk_coverage_complete"] is False
     assert set(report["cost_model"]["applies_to"]) == {"returns", "r_multiple", "win_loss_label"}
 
 
@@ -55,6 +58,8 @@ def test_costs_are_charged_before_every_gate_metric():
     assert net["thresholds"]["50"]["precision"] == 0.0
     assert net["thresholds"]["50"]["average_r_multiple"] < 0
     assert net["wins"] == 0
+    assert net["cost_model"]["risk_coverage_rows"] == 10
+    assert net["cost_model"]["risk_coverage_complete"] is True
     # Gross stays visible for diagnosis rather than being overwritten.
     assert net["thresholds"]["50"]["average_gross_return_pct"] == 0.20
 
@@ -67,6 +72,8 @@ def test_missing_risk_pct_does_not_fabricate_a_net_r():
     # No stop distance on record -> stored R is preserved, return is still charged.
     assert report["thresholds"]["50"]["average_r_multiple"] == 2.0
     assert report["thresholds"]["50"]["average_return_pct"] == 3.5
+    assert report["cost_model"]["risk_coverage_rows"] == 0
+    assert report["cost_model"]["risk_coverage_complete"] is False
 
 
 def test_by_direction_blocks_carry_within_direction_ranking_metrics():

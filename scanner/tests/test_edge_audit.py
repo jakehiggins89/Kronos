@@ -5,12 +5,16 @@ _NET_COST_MODEL = {
     "bps_per_side": 25.0,
     "round_trip_return_pct_charged": 0.5,
     "basis": "net_of_costs",
+    "candidate_rows": 1000,
+    "risk_coverage_rows": 1000,
+    "risk_coverage_complete": True,
     "applies_to": ["returns", "r_multiple", "win_loss_label"],
 }
 
 
 def test_edge_audit_blocks_when_walk_forward_validation_has_no_supported_threshold():
     validation = {
+        "samples": 1000,
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
         "thresholds": {
@@ -44,6 +48,7 @@ def test_edge_audit_blocks_when_walk_forward_validation_has_no_supported_thresho
 
 def test_edge_audit_allows_research_only_when_validation_and_candidate_quality_pass():
     validation = {
+        "samples": 1000,
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
         "cost_model": dict(_NET_COST_MODEL),
@@ -127,6 +132,7 @@ def _ranking_validation(within_bullish_ic=None):
             "rank_ic_r": {"ic": within_bullish_ic, "p_value": 0.01, "p_value_day_clustered": 0.02, "n": 500},
         }
     return {
+        "samples": 1000,
         "validation_method": "purged_walk_forward",
         "future_analogs_allowed": False,
         "cost_model": dict(_NET_COST_MODEL),
@@ -201,8 +207,10 @@ def test_positive_cost_stamp_needs_complete_consistent_net_provenance():
     malformed_models = [
         {**_NET_COST_MODEL, "basis": "gross"},
         {key: value for key, value in _NET_COST_MODEL.items() if key != "round_trip_return_pct_charged"},
+        {key: value for key, value in _NET_COST_MODEL.items() if key != "risk_coverage_complete"},
         {**_NET_COST_MODEL, "round_trip_return_pct_charged": 0.05},
         {**_NET_COST_MODEL, "applies_to": ["returns"]},
+        {**_NET_COST_MODEL, "candidate_rows": 999},
     ]
     for cost_model in malformed_models:
         validation = _ranking_validation(within_bullish_ic=0.10)
@@ -213,6 +221,24 @@ def test_positive_cost_stamp_needs_complete_consistent_net_provenance():
         assert report["checks"]["costs_charged"]["passed"] is False
         assert report["checks"]["ranking_evidence"]["passed"] is False
         assert report["readiness"] == "blocked"
+
+
+def test_net_cost_provenance_requires_complete_risk_denominator_coverage():
+    """Gross R rows without a stop denominator must never open readiness."""
+    validation = _ranking_validation(within_bullish_ic=0.10)
+    validation["cost_model"].update(
+        {
+            "candidate_rows": 1000,
+            "risk_coverage_rows": 999,
+            "risk_coverage_complete": False,
+        }
+    )
+
+    report = compute_edge_audit_report(validation, _EMPTY_SCAN)
+
+    assert report["checks"]["costs_charged"]["passed"] is False
+    assert report["checks"]["ranking_evidence"]["passed"] is False
+    assert report["readiness"] == "blocked"
 
 
 def test_ranking_gate_uses_clustered_p_value_instead_of_raw_iid_p_value():
