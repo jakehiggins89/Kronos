@@ -49,6 +49,12 @@ _ISSUE_GUIDE: dict[str, tuple[str, str, str, bool]] = {
         "do not trust these results; rebuild the retrieval index with the purge enabled",
         True,
     ),
+    "validation_cost_model_unsupported": (
+        "Validation cost basis is unsafe",
+        "Validation used less than the pre-registered 25 bps/side floor or has incomplete cost provenance",
+        "restore KRONOS_COST_BPS_PER_SIDE to at least 25 and rerun the full Edge lab",
+        True,
+    ),
     "options_no_liquid_contract": (
         "No liquid options chain",
         "Some names have no option strike that clears the spread and open-interest gates",
@@ -225,10 +231,18 @@ def _win_rate_summary(block: dict) -> str:
 def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines = []
     cost_model = validation.get("cost_model")
-    if isinstance(cost_model, dict) and _num(cost_model.get("bps_per_side")) > 0:
+    cost_check = audit.get("checks", {}).get("costs_charged", {})
+    cost_value = cost_check.get("value", {}) if isinstance(cost_check.get("value"), dict) else {}
+    if cost_check.get("passed") is True and isinstance(cost_model, dict):
         lines.append(
             f"- Cost basis: all figures NET of {_fmt(cost_model.get('bps_per_side'), 0)} bps/side "
             f"round trip ({_fmt(cost_model.get('round_trip_return_pct_charged'), 2)} pct pts per trade)"
+        )
+    elif isinstance(cost_model, dict):
+        lines.append(
+            f"- Cost basis: INVALID -- {_fmt(cost_model.get('bps_per_side'), 2)} bps/side "
+            f"does not satisfy the {_fmt(cost_value.get('minimum_bps_per_side'), 0)} bps/side floor "
+            "and complete-provenance gate"
         )
     else:
         lines.append("- Cost basis: MISSING -- gates are blocked until validation charges a round-trip cost")

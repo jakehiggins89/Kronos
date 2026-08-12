@@ -4,6 +4,14 @@ import math
 from typing import Any
 
 
+# This is deliberately not an environment setting. 25 bps/side is the
+# pre-registered production floor for this small-cap/options universe; allowing
+# the same environment override that computes research scenarios to lower the
+# audit floor would let a token positive charge certify effectively gross
+# evidence.
+MIN_AUDITED_COST_BPS_PER_SIDE = 25.0
+
+
 def _finite_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -314,6 +322,7 @@ def compute_edge_audit_report(
     )
     required_cost_metrics = {"returns", "r_multiple", "win_loss_label"}
     cost_basis_valid = str(cost_model.get("basis") or "") == "net_of_costs"
+    cost_floor_met = cost_bps_per_side >= MIN_AUDITED_COST_BPS_PER_SIDE
     cost_charge_consistent = (
         cost_bps_per_side > 0.0
         and _is_finite_number(cost_model.get("round_trip_return_pct_charged"))
@@ -347,6 +356,7 @@ def compute_edge_audit_report(
     )
     costs_charged = (
         cost_basis_valid
+        and cost_floor_met
         and cost_charge_consistent
         and cost_metrics_complete
         and cost_risk_coverage_complete
@@ -383,9 +393,11 @@ def compute_edge_audit_report(
         "costs_charged": _check(
             "costs_charged",
             costs_charged,
-            "Gate metrics must carry complete, internally consistent provenance for a non-zero net transaction cost.",
+            "Gate metrics must carry complete, internally consistent provenance for the pre-registered net transaction-cost floor.",
             {
                 "bps_per_side": cost_bps_per_side,
+                "minimum_bps_per_side": MIN_AUDITED_COST_BPS_PER_SIDE,
+                "minimum_cost_met": cost_floor_met,
                 "round_trip_return_pct_charged": cost_round_trip_pct,
                 "expected_round_trip_return_pct": expected_round_trip_pct,
                 "basis": cost_model.get("basis"),
@@ -502,6 +514,8 @@ def compute_edge_audit_report(
         blockers.append("validation_not_walk_forward")
     if not checks["future_analogs_blocked"]["passed"]:
         blockers.append("future_analogs_allowed")
+    if not checks["costs_charged"]["passed"]:
+        blockers.append("validation_cost_model_unsupported")
     if not evidence_supported:
         if not checks["validation_threshold"]["passed"]:
             blockers.append(f"validation_threshold_{validation_threshold}_unsupported")

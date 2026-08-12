@@ -223,6 +223,27 @@ def test_positive_cost_stamp_needs_complete_consistent_net_provenance():
         assert report["readiness"] == "blocked"
 
 
+def test_cost_gate_enforces_the_preregistered_25_bps_per_side_floor():
+    """A token positive charge must not bypass the production cost basis."""
+    validation = _ranking_validation(within_bullish_ic=0.10)
+    validation["cost_model"].update(
+        {
+            "bps_per_side": 0.01,
+            "round_trip_return_pct_charged": 0.0002,
+        }
+    )
+
+    report = compute_edge_audit_report(validation, _EMPTY_SCAN)
+
+    cost_check = report["checks"]["costs_charged"]
+    assert cost_check["passed"] is False
+    assert cost_check["value"]["minimum_bps_per_side"] == 25.0
+    assert cost_check["value"]["minimum_cost_met"] is False
+    assert "validation_cost_model_unsupported" in report["blockers"]
+    assert report["checks"]["ranking_evidence"]["passed"] is False
+    assert report["readiness"] == "blocked"
+
+
 def test_net_cost_provenance_requires_complete_risk_denominator_coverage():
     """Gross R rows without a stop denominator must never open readiness."""
     validation = _ranking_validation(within_bullish_ic=0.10)

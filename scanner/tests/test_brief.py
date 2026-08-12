@@ -101,6 +101,44 @@ def test_an_unrecognised_warning_stays_a_finding(tmp_path):
     assert "some_new_warning" in text
 
 
+def test_below_floor_cost_model_is_an_actionable_fault(tmp_path):
+    _brief_for(
+        tmp_path,
+        blockers=["validation_cost_model_unsupported"],
+        warnings=[],
+    )
+    audit_path = tmp_path / "edge_audit_report.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["checks"]["costs_charged"] = {
+        "passed": False,
+        "value": {
+            "bps_per_side": 0.01,
+            "minimum_bps_per_side": 25.0,
+            "minimum_cost_met": False,
+        },
+    }
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    (tmp_path / "edge_validation_report.json").write_text(
+        json.dumps(
+            {
+                "cost_model": {
+                    "bps_per_side": 0.01,
+                    "round_trip_return_pct_charged": 0.0002,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    markdown, payload = build_daily_brief(tmp_path)
+
+    assert "Cost basis: INVALID" in markdown
+    assert "25 bps/side floor" in markdown
+    assert "Validation cost basis is unsafe" in payload["telegram_text"]
+    assert "KRONOS_COST_BPS_PER_SIDE" in payload["next_action"]
+    assert "DO THIS" in payload["telegram_text"]
+
+
 def test_unreadable_audit_is_not_reported_as_healthy(tmp_path):
     # "No warnings" from a corrupt/absent report means "we know nothing", which
     # must never render as a green light.
