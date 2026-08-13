@@ -37,7 +37,11 @@ def _count_touches(closes: pd.Series, level: float, tolerance: float, side: str)
 
 
 def detect_potter_box(ticker: str, synthetic_bars: pd.DataFrame) -> PotterBoxResult:
-    min_needed = CONSOLIDATION_BARS + ATR_PERIOD + 2
+    # The source-derived Potter setup needs a complete consolidation window,
+    # its prior close, and the breakout candle. ATR/range compression remain
+    # useful diagnostics, but missing extra lookback must not reject an
+    # otherwise documented control/touch/break setup.
+    min_needed = CONSOLIDATION_BARS + 2
     if synthetic_bars is None or len(synthetic_bars) < min_needed:
         return PotterBoxResult(
             ticker=ticker,
@@ -81,25 +85,11 @@ def detect_potter_box(ticker: str, synthetic_bars: pd.DataFrame) -> PotterBoxRes
     prior_ranges = (prior_window["High"] - prior_window["Low"]).dropna()
     prior_avg_range = float(prior_ranges.mean()) if not prior_ranges.empty else None
 
-    if atr_value is None or prior_avg_range is None or prior_avg_range <= 0:
-        return PotterBoxResult(
-            ticker=ticker,
-            passed=False,
-            direction=None,
-            box_top=box_top,
-            box_bottom=box_bottom,
-            cost_basis=cost_basis,
-            prior_close=prior_close,
-            breakout_close=float(breakout["Close"]),
-            breakout_strength_pct=None,
-            atr_value=atr_value,
-            range_compression_ratio=None,
-            no_trend_score=None,
-            skip_reason="unable to compute pre-breakout ATR/range compression",
-            diagnostics={},
-        )
-
-    range_compression_ratio = avg_cons_range / prior_avg_range if prior_avg_range else 999.0
+    range_compression_ratio = (
+        avg_cons_range / prior_avg_range
+        if prior_avg_range is not None and prior_avg_range > 0
+        else None
+    )
 
     cons_closes = cons["Close"].values
     x = np.arange(len(cons_closes))
@@ -126,10 +116,18 @@ def detect_potter_box(ticker: str, synthetic_bars: pd.DataFrame) -> PotterBoxRes
         breakout_strength_pct = ((control_bottom - breakout_close) / max(control_bottom, 1e-9)) * 100
 
     checks = {
-        # Tunable gates read module attributes so tuning overrides applied
-        # mid-process (research_ops) take effect without a restart.
-        "atr_compressed": atr_value <= scanner_config.ATR_COMPRESSION * prior_avg_range,
-        "range_compressed": range_compression_ratio <= scanner_config.RANGE_COMPRESSION,
+        # Compression values are advisory research/ranking features. The
+        # source-derived doctrine does not make them setup pass conditions.
+        "atr_compressed": (
+            atr_value is not None
+            and prior_avg_range is not None
+            and prior_avg_range > 0
+            and atr_value <= scanner_config.ATR_COMPRESSION * prior_avg_range
+        ),
+        "range_compressed": (
+            range_compression_ratio is not None
+            and range_compression_ratio <= scanner_config.RANGE_COMPRESSION
+        ),
         "no_trend": no_trend_score <= scanner_config.NO_TREND_SLOPE_ABS_MAX,
         "top_touches_ok": top_touches >= MIN_BOX_TOP_TOUCHES,
         "bottom_touches_ok": bottom_touches >= MIN_BOX_BOTTOM_TOUCHES,
@@ -138,10 +136,7 @@ def detect_potter_box(ticker: str, synthetic_bars: pd.DataFrame) -> PotterBoxRes
     }
 
     passed = (
-        checks["atr_compressed"]
-        and checks["range_compressed"]
-        and checks["no_trend"]
-        and checks["top_touches_ok"]
+        checks["top_touches_ok"]
         and checks["bottom_touches_ok"]
         and (bullish or bearish)
     )

@@ -39,6 +39,34 @@ def test_bullish_requires_prior_close_above_cost_basis():
     assert result.passed is False
 
 
+def test_compression_metrics_are_advisory_not_setup_gates(monkeypatch):
+    df = _make_synthetic_df()
+    monkeypatch.setattr(config, "ATR_COMPRESSION", 0.01)
+    monkeypatch.setattr(config, "RANGE_COMPRESSION", 0.01)
+    monkeypatch.setattr(config, "NO_TREND_SLOPE_ABS_MAX", 0.0)
+
+    result = detect_potter_box("TEST", df)
+
+    assert result.diagnostics["atr_compressed"] is False
+    assert result.diagnostics["range_compressed"] is False
+    assert result.diagnostics["no_trend"] is False
+    assert result.diagnostics["top_touches_ok"] is True
+    assert result.diagnostics["bottom_touches_ok"] is True
+    assert result.diagnostics["bullish_breakout"] is True
+    assert result.passed is True
+
+
+def test_documented_setup_can_pass_with_less_than_atr_plus_box_history():
+    df = _make_synthetic_df().iloc[-18:].copy()
+
+    result = detect_potter_box("TEST", df)
+
+    assert result.diagnostics["top_touches_ok"] is True
+    assert result.diagnostics["bottom_touches_ok"] is True
+    assert result.diagnostics["bullish_breakout"] is True
+    assert result.passed is True
+
+
 def test_research_candidate_scores_near_breakout():
     df = _make_synthetic_df()
     df.iloc[-1, df.columns.get_loc("Close")] = 100.7
