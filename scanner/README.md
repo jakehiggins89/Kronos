@@ -98,7 +98,7 @@ Each run finishes by writing `scanner\reports\daily_brief.md` and sending the co
 To restore the hardened schedule after moving the checkout, run `powershell -ExecutionPolicy Bypass -File scanner\register_research_ops_task.ps1`. To inspect or change it manually, open Task Scheduler > "Kronos Daily Research Ops".
 
 ## Daily Brief
-`brief` reads the latest report artifacts (no network, no model loads) and renders a verdict-first operator summary: evidence-gate progress, today's scan, accepted counterfactual research samples explicitly separated from live/Edge-qualified trades, learning-loop state including Kronos lift, every blocker in plain English with its fix, and the single next action. `research_ops` runs it automatically as its final stage.
+`brief` reads the latest report artifacts (no network, no model loads) and renders a verdict-first operator summary: evidence-gate progress, today's scan, accepted counterfactual research samples, learning-loop state including Kronos lift, every blocker in plain English with its fix, and the single next action. Edge scan recommendations are never labelled as live trades: blocked/research-only recommendations render under `EDGE RESEARCH`, while an audit-authorized candidate can render only as a `PAPER CANDIDATE`. `research_ops` runs it automatically as its final stage.
 
 ```bat
 .\venv\Scripts\python.exe -m scanner.main --mode brief

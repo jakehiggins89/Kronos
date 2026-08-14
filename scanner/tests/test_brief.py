@@ -468,13 +468,80 @@ def test_today_research_samples_are_not_reported_as_zero_qualified(tmp_path):
     telegram = payload["telegram_text"]
 
     assert "LIVE TRADES - none" in telegram
-    assert "2 scanned, 0 Edge-qualified" in telegram
+    assert "2 scanned, 0 Edge recommendations" in telegram
     assert "RESEARCH SAMPLES - 2 counterfactual only" in telegram
     assert "LYFT bullish score 68" in telegram
     assert "CHPT bullish score 73" in telegram
     assert "## Accepted research samples" in markdown
     assert "never alerted or traded" in markdown
     assert [row["ticker"] for row in payload["research_samples"]] == ["LYFT", "CHPT"]
+
+
+def test_blocked_edge_promotions_are_never_labelled_live_trades(tmp_path):
+    """A scan-level promotion is only research when the readiness audit blocks it."""
+    _write_reports(tmp_path)
+    scan_path = tmp_path / "edge_scan_report.json"
+    scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    scan["candidates"] = [
+        {
+            "ticker": "T",
+            "status": "candidate",
+            "direction": "bullish",
+            "edge_score": 72.45,
+            "recommendation": "promote",
+        },
+        {
+            "ticker": "AFRM",
+            "status": "candidate",
+            "direction": "bullish",
+            "edge_score": 67.40,
+            "recommendation": "promote",
+        },
+    ]
+    scan_path.write_text(json.dumps(scan), encoding="utf-8")
+
+    _markdown, payload = build_daily_brief(tmp_path)
+    telegram = payload["telegram_text"]
+
+    assert "LIVE TRADES - none" in telegram
+    assert "LIVE TRADES - 2" not in telegram
+    assert "EDGE RESEARCH - 2" in telegram
+    assert "2 Edge recommendations, 0 paper-authorized" in telegram
+
+
+def test_audit_authorized_promotion_is_labelled_paper_not_live(tmp_path):
+    _write_reports(tmp_path)
+    audit_path = tmp_path / "edge_audit_report.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["readiness"] = "paper_trade_only"
+    audit["blockers"] = []
+    audit["summary"]["execution_ready_promoted_candidates"] = ["T"]
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    scan_path = tmp_path / "edge_scan_report.json"
+    scan_path.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "ticker": "T",
+                        "status": "candidate",
+                        "direction": "bullish",
+                        "edge_score": 72.45,
+                        "recommendation": "promote",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _markdown, payload = build_daily_brief(tmp_path)
+    telegram = payload["telegram_text"]
+
+    assert "LIVE TRADES - none" in telegram
+    assert "PAPER CANDIDATES - 1" in telegram
+    assert "1 Edge recommendations, 1 paper-authorized" in telegram
+    assert "(paper candidate)" in telegram
 
 
 def test_build_daily_brief_survives_missing_reports(tmp_path):

@@ -606,6 +606,18 @@ def _telegram_text(
 
     candidates = [row for row in scan.get("candidates", []) if isinstance(row, dict)]
     actionable = [row for row in candidates if row.get("recommendation") in {"research", "promote"}]
+    summary = audit.get("summary", {}) if isinstance(audit.get("summary"), dict) else {}
+    execution_ready = {
+        str(ticker)
+        for ticker in (summary.get("execution_ready_promoted_candidates", []) or [])
+    }
+    paper_authorized = [
+        row
+        for row in actionable
+        if readiness == "paper_trade_only"
+        and row.get("recommendation") == "promote"
+        and str(row.get("ticker")) in execution_ready
+    ]
 
     # Emoji only ever reach Telegram: the markdown brief (the one print()ed to a
     # cp1252 Windows console) stays ASCII, and every report that embeds this text
@@ -628,13 +640,28 @@ def _telegram_text(
             lines.append(f"- {short}")
             lines.append(f"  -> {fix}")
 
-    lines += ["", f"LIVE TRADES - {len(actionable) if actionable else 'none'}"]
-    scan_line = f"{len(candidates)} scanned, {len(actionable)} Edge-qualified"
-    lines.append(scan_line if actionable else f"{scan_line} (quiet by design)")
-    for row in actionable[:3]:
+    # Edge recommendations are not executions. In particular, a scan-level
+    # ``promote`` is still research-only when the audit blocks its direction,
+    # evidence route, or execution quality. Calling those rows "LIVE TRADES"
+    # can invite an operator to act against the same fail-closed audit printed
+    # two lines above.
+    lines += ["", "LIVE TRADES - none"]
+    if actionable:
+        section = "PAPER CANDIDATES" if len(paper_authorized) == len(actionable) else "EDGE RESEARCH"
+        lines += ["", f"{section} - {len(actionable)}"]
         lines.append(
-            f"- {row.get('ticker')} {row.get('direction', '?')} edge {_fmt(row.get('edge_score'), 1)}"
+            f"{len(candidates)} scanned, {len(actionable)} Edge recommendations, "
+            f"{len(paper_authorized)} paper-authorized"
         )
+        paper_tickers = {str(row.get("ticker")) for row in paper_authorized}
+        for row in actionable[:3]:
+            status = "paper candidate" if str(row.get("ticker")) in paper_tickers else "research only"
+            lines.append(
+                f"- {row.get('ticker')} {row.get('direction', '?')} edge "
+                f"{_fmt(row.get('edge_score'), 1)} ({status})"
+            )
+    else:
+        lines.append(f"{len(candidates)} scanned, 0 Edge recommendations (quiet by design)")
 
     if research_samples:
         lines += ["", f"RESEARCH SAMPLES - {len(research_samples)} counterfactual only"]
