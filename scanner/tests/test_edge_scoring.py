@@ -35,6 +35,57 @@ def test_score_edge_candidate_promotes_positive_analog_expectancy():
     assert result["analog_summary"]["count"] == 3
 
 
+def test_execution_only_fields_do_not_change_validated_edge_score():
+    """Live and historical rows must share one strategy-score scale.
+
+    The historical retrieval index cannot reconstruct point-in-time equity
+    feed confidence or option-chain quality. Those fields still gate execution,
+    but they must not move the score whose thresholds are validated on that
+    historical index.
+    """
+    analogs = [
+        {
+            "outcome_label": "win",
+            "outcome_return_pct": 3.0,
+            "r_multiple": 1.4,
+            "risk_pct_used": 2.142857,
+            "mae_pct": -0.6,
+            "mfe_pct": 4.0,
+        },
+        {
+            "outcome_label": "win",
+            "outcome_return_pct": 2.0,
+            "r_multiple": 1.0,
+            "risk_pct_used": 2.0,
+            "mae_pct": -0.8,
+            "mfe_pct": 3.0,
+        },
+        {
+            "outcome_label": "loss",
+            "outcome_return_pct": -0.7,
+            "r_multiple": -0.3,
+            "risk_pct_used": 2.333333,
+            "mae_pct": -1.2,
+            "mfe_pct": 1.0,
+        },
+    ]
+    live_features = _features()
+    historical_features = {
+        **live_features,
+        "feed_confidence": 0.5,
+        "options_spread_pct": 0.0,
+        "options_data_quality": 0.0,
+    }
+
+    live = score_edge_candidate(live_features, analogs, min_analogs=3)
+    historical = score_edge_candidate(historical_features, analogs, min_analogs=3)
+
+    assert live["edge_score"] == historical["edge_score"]
+    assert live["recommendation"] == "promote"
+    assert historical["recommendation"] != "promote"
+    assert "options_data_not_execution_grade" in historical["blocking_reasons"]
+
+
 def test_score_edge_candidate_charges_costs_before_analog_expectancy():
     # Three tiny gross wins are all net losses after the strategy's committed
     # 25 bps/side execution basis. Candidate scoring must see the same net
@@ -134,7 +185,7 @@ def test_score_edge_candidate_rejects_negative_expectancy():
     assert result["scorecard"]["analog_expectancy"] < 0
 
 
-def test_score_edge_candidate_penalizes_thin_or_low_quality_evidence():
+def test_score_edge_candidate_blocks_thin_or_low_quality_evidence():
     features = _features()
     features["data_quality_score"] = 0.4
     features["feed_confidence"] = 0.25
@@ -146,7 +197,9 @@ def test_score_edge_candidate_penalizes_thin_or_low_quality_evidence():
 
     assert result["recommendation"] != "promote"
     assert result["scorecard"]["sample_penalty"] < 0
-    assert result["scorecard"]["data_quality"] < 0
+    assert result["scorecard"]["data_quality"] == 0.0
+    assert "low_data_quality" in result["blocking_reasons"]
+    assert "low_feed_confidence" in result["blocking_reasons"]
 
 
 def test_score_edge_candidate_rejects_when_core_setup_gates_fail():

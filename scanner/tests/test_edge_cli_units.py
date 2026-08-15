@@ -78,6 +78,9 @@ def test_score_edge_for_bars_returns_scorecard_without_network():
     assert "edge_score" in result
     assert "scorecard" in result
     assert result["analog_summary"]["count"] > 0
+    assert result["gross_analog_summary"]["count"] > 0
+    assert result["analog_cost_model"]["analog_rows"] > 0
+    assert result["analog_cost_model"]["basis"] == "net_of_costs"
 
 
 def test_score_edge_for_bars_includes_option_liquidity(monkeypatch):

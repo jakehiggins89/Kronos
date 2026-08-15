@@ -121,9 +121,16 @@ def score_edge_candidate(features: dict, analogs: list[dict], min_analogs: int =
         "kronos": 0.0,
         "uncertainty": -_clamp(summary["return_std_pct"], 0.0, 12.0),
         "sample_penalty": -_clamp(max(min_analogs - summary["count"], 0) * 5.0, 0.0, 20.0),
-        "data_quality": _clamp(((data_quality - 1.0) * 15.0) + ((feed_confidence - 0.5) * 10.0), -18.0, 6.0),
-        "options_liquidity": -_clamp(max(options_spread - options_spread_limit, 0.0) * 100.0, 0.0, 10.0),
-        "options_data_quality": -_clamp(max(0.75 - options_data_quality, 0.0) * 20.0, 0.0, 8.0),
+        # Historical rows cannot reconstruct point-in-time feed confidence or
+        # option-chain quality. Letting those execution-only fields change the
+        # numeric score put live candidates on a different scale from the
+        # walk-forward thresholds (good live quotes gained up to 12 points
+        # versus otherwise identical historical rows). Preserve the scorecard
+        # keys for report compatibility, but enforce these conditions only via
+        # the promotion gates and explicit blocking reasons below.
+        "data_quality": 0.0,
+        "options_liquidity": 0.0,
+        "options_data_quality": 0.0,
     }
     raw_score = sum(scorecard.values())
     edge_score = round(_clamp(raw_score, 0.0, 100.0), 2)

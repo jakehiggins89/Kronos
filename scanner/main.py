@@ -1408,6 +1408,8 @@ def _score_edge_for_bars(
         "recommendation": scoring["recommendation"],
         "scorecard": scoring["scorecard"],
         "analog_summary": scoring["analog_summary"],
+        "gross_analog_summary": scoring["gross_analog_summary"],
+        "analog_cost_model": scoring["analog_cost_model"],
         "blocking_reasons": scoring.get("blocking_reasons", []),
         "rejection_reasons": scoring.get("rejection_reasons", []),
         "analog_count": len(analogs),
