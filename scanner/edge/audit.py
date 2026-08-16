@@ -135,6 +135,7 @@ def compute_edge_audit_report(
     validation_report: dict,
     scan_report: dict,
     *,
+    expected_runtime_fingerprint: str | None = None,
     validation_threshold: int = 55,
     min_validation_signals: int = 20,
     min_precision: float = 0.55,
@@ -155,6 +156,18 @@ def compute_edge_audit_report(
 
     validation_method = validation_report.get("validation_method")
     future_analogs_allowed = bool(validation_report.get("future_analogs_allowed", True))
+    scan_runtime_fingerprint = str(scan_report.get("runtime_fingerprint") or "").strip()
+    validation_runtime_fingerprint = str(validation_report.get("runtime_fingerprint") or "").strip()
+    expected_runtime_fingerprint = str(expected_runtime_fingerprint or "").strip()
+    runtime_source_required = bool(expected_runtime_fingerprint)
+    runtime_source_matches = (
+        not runtime_source_required
+        or (
+            bool(scan_runtime_fingerprint)
+            and scan_runtime_fingerprint == validation_runtime_fingerprint
+            and scan_runtime_fingerprint == expected_runtime_fingerprint
+        )
+    )
     threshold_precision_clustered = threshold.get("precision_day_clustered")
     threshold_precision_clustered = (
         threshold_precision_clustered if isinstance(threshold_precision_clustered, dict) else None
@@ -417,6 +430,17 @@ def compute_edge_audit_report(
             "Validation must not score past candidates with future analogs.",
             future_analogs_allowed,
         ),
+        "runtime_source": _check(
+            "runtime_source",
+            runtime_source_matches,
+            "Scan and validation must come from the exact production runtime being audited.",
+            {
+                "required": runtime_source_required,
+                "expected": expected_runtime_fingerprint or None,
+                "scan": scan_runtime_fingerprint or None,
+                "validation": validation_runtime_fingerprint or None,
+            },
+        ),
         "validation_threshold": _check(
             "validation_threshold",
             threshold_passed,
@@ -514,6 +538,8 @@ def compute_edge_audit_report(
         blockers.append("validation_not_walk_forward")
     if not checks["future_analogs_blocked"]["passed"]:
         blockers.append("future_analogs_allowed")
+    if not checks["runtime_source"]["passed"]:
+        blockers.append("evidence_runtime_source_mismatch")
     if not checks["costs_charged"]["passed"]:
         blockers.append("validation_cost_model_unsupported")
     if not evidence_supported:
@@ -600,17 +626,27 @@ def compute_edge_audit_report(
     else:
         readiness = "watch_only"
 
+    evidence_provenance = {
+        "scan_completed_at": scan_report.get("completed_at"),
+        "validation_completed_at": validation_report.get("completed_at"),
+        "scan_run_id": scan_report.get("evidence_run_id"),
+        "validation_run_id": validation_report.get("evidence_run_id"),
+    }
+    if runtime_source_required or scan_runtime_fingerprint or validation_runtime_fingerprint:
+        evidence_provenance.update(
+            {
+                "scan_runtime_fingerprint": scan_runtime_fingerprint or None,
+                "validation_runtime_fingerprint": validation_runtime_fingerprint or None,
+                "runtime_fingerprint": expected_runtime_fingerprint if runtime_source_matches else None,
+            }
+        )
+
     return {
         "mode": "audit_edge",
         "readiness": readiness,
         "blockers": blockers,
         "warnings": warnings,
-        "evidence_provenance": {
-            "scan_completed_at": scan_report.get("completed_at"),
-            "validation_completed_at": validation_report.get("completed_at"),
-            "scan_run_id": scan_report.get("evidence_run_id"),
-            "validation_run_id": validation_report.get("evidence_run_id"),
-        },
+        "evidence_provenance": evidence_provenance,
         "checks": checks,
         "summary": {
             "candidate_count": len(candidates),

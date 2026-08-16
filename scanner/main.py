@@ -93,6 +93,7 @@ from .edge.retrieval import (
 )
 from .edge.scoring import score_edge_candidate
 from .edge.validation import compute_edge_validation_report
+from .evidence.provenance import edge_runtime_fingerprint as _edge_runtime_fingerprint
 from .evidence.store import EvidenceRun, start_evidence_run
 from .learning.adaptive_policy import apply_adaptive_overrides, build_adaptive_policy_report
 from .learning.autotuner import apply_overrides, propose_overrides
@@ -532,6 +533,27 @@ def _preflight_checks(mode: str, env: dict, logger) -> bool:
                 "scan_run_id=%s validation_run_id=%s",
                 scan_run_id or "missing",
                 validation_run_id or "missing",
+            )
+            return False
+        audit_runtime_fingerprint = str(provenance.get("runtime_fingerprint") or "").strip()
+        scan_runtime_fingerprint = str(provenance.get("scan_runtime_fingerprint") or "").strip()
+        validation_runtime_fingerprint = str(
+            provenance.get("validation_runtime_fingerprint") or ""
+        ).strip()
+        try:
+            current_runtime_fingerprint = _edge_runtime_fingerprint()
+        except Exception as exc:
+            logger.error("Preflight failed: could not fingerprint the current runtime: %s", exc)
+            return False
+        if (
+            not audit_runtime_fingerprint
+            or audit_runtime_fingerprint != scan_runtime_fingerprint
+            or audit_runtime_fingerprint != validation_runtime_fingerprint
+            or audit_runtime_fingerprint != current_runtime_fingerprint
+        ):
+            logger.error(
+                "Preflight failed: Edge evidence was not produced by the current runtime source. "
+                "Run --mode run_edge_lab after every production code change."
             )
             return False
         now_utc = pd.Timestamp.now(tz="UTC")
@@ -1686,6 +1708,7 @@ def run_validate_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
     report["mode"] = "validate_edge"
     report["started_at"] = started_at
     report["completed_at"] = _utc_now_iso()
+    report["runtime_fingerprint"] = _edge_runtime_fingerprint()
     if evidence_run is not None:
         report["evidence_run_id"] = evidence_run.run_id
     report["validation_method"] = "purged_walk_forward"
@@ -1745,6 +1768,7 @@ def run_edge_scan(watchlist: list[str], logger, evidence_run: EvidenceRun | None
         "mode": "edge_scan",
         "started_at": started_at,
         "completed_at": completed_at,
+        "runtime_fingerprint": _edge_runtime_fingerprint(),
         "duration_seconds": _elapsed_seconds(scan_start, scan_end),
         "index_records": len(records),
         "total": len(ranked),
@@ -1857,7 +1881,12 @@ def run_audit_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
         scan_report = json.loads(EDGE_SCAN_REPORT_PATH.read_text(encoding="utf-8"))
     except Exception:
         scan_report = {}
-    payload = compute_edge_audit_report(validation_report, scan_report)
+    runtime_fingerprint = _edge_runtime_fingerprint()
+    payload = compute_edge_audit_report(
+        validation_report,
+        scan_report,
+        expected_runtime_fingerprint=runtime_fingerprint,
+    )
     payload["generated_at"] = _utc_now_iso()
     if evidence_run is not None:
         evidence_run.record_rows("audits", [payload])
@@ -1869,6 +1898,7 @@ def run_audit_edge(logger, evidence_run: EvidenceRun | None = None) -> dict:
 
 
 def run_edge_lab(watchlist: list[str], logger) -> dict:
+    runtime_fingerprint = _edge_runtime_fingerprint()
     evidence_run = start_evidence_run(
         mode="run_edge_lab",
         root_dir=EVIDENCE_DIR,
@@ -1880,7 +1910,7 @@ def run_edge_lab(watchlist: list[str], logger) -> dict:
             "validation_thresholds": list(EDGE_VALIDATION_THRESHOLDS),
             "validation_record_limit": EDGE_VALIDATION_MAX_RECORDS,
         },
-        tags={"git_commit": _git_commit()},
+        tags={"git_commit": _git_commit(), "runtime_fingerprint": runtime_fingerprint},
     )
     index_report = run_build_retrieval_index(watchlist, logger, evidence_run=evidence_run)
     validation_report = run_validate_edge(logger, evidence_run=evidence_run)

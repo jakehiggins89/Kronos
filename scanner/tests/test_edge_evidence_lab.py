@@ -239,6 +239,7 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
             {
                 "completed_at": "2026-08-01T18:00:00+00:00",
                 "evidence_run_id": "lab-run",
+                "runtime_fingerprint": "sha256:test-runtime",
                 "validation_method": "purged_walk_forward",
                 "future_analogs_allowed": False,
                 "thresholds": {"55": {"signal_count": 0, "precision": 0.0, "average_r_multiple": 0.0}},
@@ -251,6 +252,7 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
             {
                 "completed_at": "2026-08-01T18:01:00+00:00",
                 "evidence_run_id": "lab-run",
+                "runtime_fingerprint": "sha256:test-runtime",
                 "candidates": [],
             }
         ),
@@ -259,6 +261,7 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
     monkeypatch.setattr("scanner.main.EDGE_VALIDATION_REPORT_PATH", validation_path)
     monkeypatch.setattr("scanner.main.EDGE_SCAN_REPORT_PATH", scan_path)
     monkeypatch.setattr("scanner.main.EDGE_AUDIT_REPORT_PATH", audit_path)
+    monkeypatch.setattr("scanner.main._edge_runtime_fingerprint", lambda: "sha256:test-runtime")
 
     report = run_audit_edge(logger)
 
@@ -269,6 +272,42 @@ def test_audit_edge_writes_readiness_report(monkeypatch, tmp_path):
         "validation_completed_at": "2026-08-01T18:00:00+00:00",
         "scan_run_id": "lab-run",
         "validation_run_id": "lab-run",
+        "scan_runtime_fingerprint": "sha256:test-runtime",
+        "validation_runtime_fingerprint": "sha256:test-runtime",
+        "runtime_fingerprint": "sha256:test-runtime",
     }
+    assert report["checks"]["runtime_source"]["passed"] is True
     assert report["generated_at"]
     assert json.loads(audit_path.read_text(encoding="utf-8"))["mode"] == "audit_edge"
+
+
+def test_audit_edge_blocks_mixed_runtime_source(monkeypatch, tmp_path):
+    logger = logging.getLogger("test")
+    validation_path = tmp_path / "edge_validation_report.json"
+    scan_path = tmp_path / "edge_scan_report.json"
+    audit_path = tmp_path / "edge_audit_report.json"
+    validation_path.write_text(
+        json.dumps(
+            {
+                "runtime_fingerprint": "sha256:old-runtime",
+                "validation_method": "purged_walk_forward",
+                "future_analogs_allowed": False,
+                "thresholds": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    scan_path.write_text(
+        json.dumps({"runtime_fingerprint": "sha256:current-runtime", "candidates": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scanner.main.EDGE_VALIDATION_REPORT_PATH", validation_path)
+    monkeypatch.setattr("scanner.main.EDGE_SCAN_REPORT_PATH", scan_path)
+    monkeypatch.setattr("scanner.main.EDGE_AUDIT_REPORT_PATH", audit_path)
+    monkeypatch.setattr("scanner.main._edge_runtime_fingerprint", lambda: "sha256:current-runtime")
+
+    report = run_audit_edge(logger)
+
+    assert report["checks"]["runtime_source"]["passed"] is False
+    assert "evidence_runtime_source_mismatch" in report["blockers"]
+    assert report["readiness"] == "blocked"

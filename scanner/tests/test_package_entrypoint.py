@@ -228,6 +228,7 @@ def test_live_preflight_blocks_mixed_evidence_lab_runs(monkeypatch, tmp_path):
 def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
     audit_path = tmp_path / "edge_audit_report.json"
     completed_at = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(scanner_main, "_edge_runtime_fingerprint", lambda: "sha256:current-runtime")
     audit_path.write_text(
         json.dumps(
             {
@@ -239,6 +240,9 @@ def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
                     "validation_completed_at": completed_at,
                     "scan_run_id": "current-run",
                     "validation_run_id": "current-run",
+                    "scan_runtime_fingerprint": "sha256:current-runtime",
+                    "validation_runtime_fingerprint": "sha256:current-runtime",
+                    "runtime_fingerprint": "sha256:current-runtime",
                 },
                 "summary": {
                     "promotable_directions": ["bullish"],
@@ -261,6 +265,48 @@ def test_live_preflight_allows_paper_trade_only_audit(monkeypatch, tmp_path):
 
     assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is True
     assert env["_live_promotable_directions"] == ("bullish",)
+
+
+def test_live_preflight_blocks_audit_from_different_runtime_source(monkeypatch, tmp_path):
+    """Fresh evidence from old scoring code must not authorize current code."""
+    audit_path = tmp_path / "edge_audit_report.json"
+    completed_at = datetime.now(timezone.utc).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": completed_at,
+                    "validation_completed_at": completed_at,
+                    "scan_run_id": "current-run",
+                    "validation_run_id": "current-run",
+                    "scan_runtime_fingerprint": "sha256:previous-runtime",
+                    "validation_runtime_fingerprint": "sha256:previous-runtime",
+                    "runtime_fingerprint": "sha256:previous-runtime",
+                },
+                "summary": {
+                    "promotable_directions": ["bullish"],
+                    "execution_ready_promoted_candidates": ["TEST"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    monkeypatch.setattr(scanner_main, "_edge_runtime_fingerprint", lambda: "sha256:current-runtime")
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
 
 
 def test_live_preflight_blocks_paper_audit_without_candidate_authorization(monkeypatch, tmp_path):
