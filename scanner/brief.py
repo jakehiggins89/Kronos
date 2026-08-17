@@ -8,6 +8,7 @@ highest-leverage next action.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -26,15 +27,15 @@ from .config import REPORT_DIR
 # day - the designed state - read like an outage every single morning.
 _ISSUE_GUIDE: dict[str, tuple[str, str, str, bool]] = {
     "validation_threshold_55_unsupported": (
-        "Score-55 gate has no signals (expected)",
-        "The absolute score-55 gate has no supporting signals",
-        "expected while scores stay compressed; the ranking gate is the realistic path",
+        "Score-55 gate is unsupported",
+        "The absolute score-55 gate does not satisfy its out-of-sample evidence requirements",
+        "keep live off; collect only while under-sampled, otherwise test a pre-registered entry-selection change",
         False,
     ),
     "ranking_evidence_unsupported": (
         "Score doesn't rank winners yet",
-        "The score does not yet rank outcomes strongly enough out-of-sample",
-        "keep daily research_ops running so walk-forward samples accumulate",
+        "The score does not rank outcomes strongly enough out-of-sample",
+        "keep live off; collect only while under-sampled, otherwise redesign entry selection before rescoring",
         False,
     ),
     "validation_not_walk_forward": (
@@ -205,6 +206,13 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def _percentage(value: Any, digits: int = 0) -> str:
     try:
         return _fmt(float(value) * 100, digits)
@@ -228,6 +236,81 @@ def _win_rate_summary(block: dict) -> str:
     return f"{_fmt(_num(block.get('win_rate')) * 100, 0)}% (n={count})"
 
 
+def _negative_evidence_gate(
+    check: dict,
+    *,
+    evidence_key: str,
+    average_key: str,
+    t_stat_key: str,
+) -> bool:
+    """Whether a gate has enough dependence-aware evidence and it is negative.
+
+    A failed gate is not always immature. Once its independent-day minimum is
+    met, a non-positive average with a non-positive t-stat is evidence against
+    the current design. Calling that state "not yet" and asking for more rows
+    hides the difference between an experiment still collecting and one whose
+    tested mechanism is losing.
+    """
+    if check.get("passed") is True:
+        return False
+    value = check.get("value")
+    if not isinstance(value, dict) or value.get("dependence_metrics_present") is not True:
+        return False
+    if not all(
+        _is_finite_number(value.get(key))
+        for key in (evidence_key, "min_signals", average_key, t_stat_key)
+    ):
+        return False
+    return (
+        _int(value.get(evidence_key)) >= _int(value.get("min_signals"), 20)
+        and _num(value.get(average_key)) <= 0.0
+        and _num(value.get(t_stat_key)) <= 0.0
+    )
+
+
+def _mature_negative_edge(audit: dict) -> bool:
+    checks = audit.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    threshold = checks.get("validation_threshold")
+    ranking = checks.get("ranking_evidence")
+    if not isinstance(threshold, dict) or not isinstance(ranking, dict):
+        return False
+    return _negative_evidence_gate(
+        threshold,
+        evidence_key="signal_count",
+        average_key="average_r_multiple",
+        t_stat_key="t_stat_r_multiple",
+    ) and _negative_evidence_gate(
+        ranking,
+        evidence_key="top_decile_evidence_days",
+        average_key="top_decile_average_r",
+        t_stat_key="top_decile_t_stat",
+    )
+
+
+def _gate_status(
+    check: dict,
+    *,
+    evidence_key: str,
+    average_key: str,
+    t_stat_key: str,
+) -> str:
+    if check.get("passed") is True:
+        return "PASS"
+    if _negative_evidence_gate(
+        check,
+        evidence_key=evidence_key,
+        average_key=average_key,
+        t_stat_key=t_stat_key,
+    ):
+        return "NEGATIVE"
+    value = check.get("value")
+    if isinstance(value, dict) and _int(value.get(evidence_key)) < _int(value.get("min_signals"), 20):
+        return "COLLECTING"
+    return "UNSUPPORTED"
+
+
 def _gate_progress(audit: dict, validation: dict) -> list[str]:
     lines = []
     cost_model = validation.get("cost_model")
@@ -248,7 +331,12 @@ def _gate_progress(audit: dict, validation: dict) -> list[str]:
         lines.append("- Cost basis: MISSING -- gates are blocked until validation charges a round-trip cost")
     ranking = audit.get("checks", {}).get("ranking_evidence", {})
     value = ranking.get("value", {}) if isinstance(ranking.get("value"), dict) else {}
-    status = "PASS" if ranking.get("passed") else "not yet"
+    status = _gate_status(
+        ranking,
+        evidence_key="top_decile_evidence_days",
+        average_key="top_decile_average_r",
+        t_stat_key="top_decile_t_stat",
+    )
     raw_top_signals = _int(value.get("top_decile_signals"))
     top_evidence_days = value.get("top_decile_evidence_days")
     if top_evidence_days is None:
@@ -272,11 +360,21 @@ def _gate_progress(audit: dict, validation: dict) -> list[str]:
     )
     legacy = audit.get("checks", {}).get("validation_threshold", {})
     legacy_value = legacy.get("value", {}) if isinstance(legacy.get("value"), dict) else {}
+    legacy_status = _gate_status(
+        legacy,
+        evidence_key="signal_count",
+        average_key="average_r_multiple",
+        t_stat_key="t_stat_r_multiple",
+    )
     lines.append(
         f"- Legacy threshold-{legacy_value.get('threshold', 55)} gate "
-        f"({'PASS' if legacy.get('passed') else 'not yet'}): "
+        f"({legacy_status}): "
         f"{_int(legacy_value.get('signal_count'))}/{_int(legacy_value.get('min_signals'), 20)} "
-        f"{'evidence days' if legacy_value.get('raw_signal_count') is not None else 'signals'}"
+        f"{'evidence days' if legacy_value.get('raw_signal_count') is not None else 'signals'}, "
+        f"avg R {_fmt(legacy_value.get('average_r_multiple'))}, "
+        f"t {_fmt(legacy_value.get('t_stat_r_multiple'))}, "
+        f"precision LB {_fmt(legacy_value.get('precision_lower_bound'))} "
+        f"(need >= {_fmt(legacy_value.get('min_precision'), 2)})"
     )
     directions = validation.get("by_direction", {})
     if isinstance(directions, dict) and directions:
@@ -518,6 +616,11 @@ def _next_action(audit: dict, policy: dict) -> str:
     if faults:
         _code, _short, explanation, fix = faults[0]
         return f"{explanation}. Fix: {fix}."
+    if _mature_negative_edge(audit):
+        return (
+            "Keep live off. The score-55 and top-decile cohorts are already adequately sampled and negative; "
+            "pre-register a new entry-selection hypothesis before changing production scoring."
+        )
     if audit.get("blockers"):
         return (
             "Nothing. Keep the daily research_ops cadence; the evidence gates need more "
@@ -630,6 +733,8 @@ def _telegram_text(
     elif faults:
         headline = f"{len(faults)} thing{'s' if len(faults) > 1 else ''} need{'' if len(faults) > 1 else 's'} you."
         lines = [f"⚠️ KRONOS - {today}", headline]
+    elif _mature_negative_edge(audit):
+        lines = [f"✅ KRONOS - {today}", "No operator action. Strategy evidence is negative."]
     else:
         lines = [f"✅ KRONOS - {today}", "Nothing to do. Nothing is broken."]
     lines.append(_LIVE_LINE.get(readiness, "Live alerts: off - run research_ops to rebuild the reports."))

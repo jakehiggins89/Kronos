@@ -100,6 +100,8 @@ To restore the hardened schedule after moving the checkout, run `powershell -Exe
 ## Daily Brief
 `brief` reads the latest report artifacts (no network, no model loads) and renders a verdict-first operator summary: evidence-gate progress, today's scan, accepted counterfactual research samples, learning-loop state including Kronos lift, every blocker in plain English with its fix, and the single next action. Edge scan recommendations are never labelled as live trades: blocked/research-only recommendations render under `EDGE RESEARCH`, while an audit-authorized candidate can render only as a `PAPER CANDIDATE`. `research_ops` runs it automatically as its final stage.
 
+Gate progress distinguishes `COLLECTING` from `NEGATIVE`. Once both the score-55 and top-decile routes have enough independent entry days but non-positive dependence-aware expectancy, the brief calls for a pre-registered entry-selection redesign instead of implying that more samples alone will repair the tested strategy.
+
 ```bat
 .\venv\Scripts\python.exe -m scanner.main --mode brief
 ```

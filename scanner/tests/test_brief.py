@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from scanner.brief import build_daily_brief, run_brief
 
 
-def _brief_for(tmp_path, *, warnings, blockers=None, summary=None, policy_extra=None):
+def _brief_for(tmp_path, *, warnings, blockers=None, summary=None, policy_extra=None, checks=None):
     """Minimal report set: enough for the brief, varied by audit codes."""
     (tmp_path / "edge_audit_report.json").write_text(
         json.dumps(
@@ -14,7 +14,9 @@ def _brief_for(tmp_path, *, warnings, blockers=None, summary=None, policy_extra=
                 "readiness": "blocked",
                 "blockers": blockers if blockers is not None else ["ranking_evidence_unsupported"],
                 "warnings": warnings,
-                "checks": {
+                "checks": checks
+                if checks is not None
+                else {
                     "ranking_evidence": {
                         "passed": False,
                         "value": {"rank_ic": -0.016, "min_rank_ic": 0.07},
@@ -163,6 +165,56 @@ def test_quiet_day_leads_with_no_action_required(tmp_path):
     assert next_action.startswith("Nothing.")
     # The gate codes are spelled out under UNLOCK; FYI must not repeat them.
     assert "Score doesn't rank winners yet" not in text.split("FYI")[1]
+
+
+def test_mature_negative_gates_call_for_strategy_redesign_not_more_samples(tmp_path):
+    checks = {
+        "ranking_evidence": {
+            "passed": False,
+            "value": {
+                "rank_ic": 0.017,
+                "min_rank_ic": 0.07,
+                "rank_ic_p_value": 0.303,
+                "top_decile_signals": 150,
+                "top_decile_evidence_days": 56,
+                "min_signals": 20,
+                "top_decile_average_r": -0.16,
+                "top_decile_t_stat": -2.09,
+                "top_decile_precision_lower_bound": 0.27,
+                "dependence_metrics_present": True,
+            },
+        },
+        "validation_threshold": {
+            "passed": False,
+            "value": {
+                "threshold": 55,
+                "signal_count": 42,
+                "raw_signal_count": 58,
+                "min_signals": 20,
+                "precision": 0.34,
+                "precision_lower_bound": 0.21,
+                "min_precision": 0.55,
+                "average_r_multiple": -0.26,
+                "t_stat_r_multiple": -2.85,
+                "dependence_metrics_present": True,
+            },
+        },
+    }
+    text, next_action = _brief_for(
+        tmp_path,
+        blockers=["validation_threshold_55_unsupported", "ranking_evidence_unsupported"],
+        warnings=["bullish_edge_negative", "bearish_edge_negative"],
+        checks=checks,
+    )
+
+    markdown, _payload = build_daily_brief(tmp_path)
+
+    assert text.splitlines()[1] == "No operator action. Strategy evidence is negative."
+    assert "Legacy threshold-55 gate (NEGATIVE)" in markdown
+    assert "Ranking gate (NEGATIVE)" in markdown
+    assert "needs more resolved samples" not in next_action
+    assert "already adequately sampled and negative" in next_action
+    assert "pre-register a new entry-selection hypothesis" in next_action
 
 
 def test_delayed_consolidated_equity_feed_is_reported_as_research_only_finding(tmp_path):
