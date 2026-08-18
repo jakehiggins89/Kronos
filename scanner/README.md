@@ -155,7 +155,7 @@ How the evidence is measured (2026-07 revision):
 Research recommendations are gated by live setup quality. Strong historical analogs cannot promote or research-label a candidate when both Potter Box and Empty Space gates fail.
 
 ### Potter Doctrine v2 Features
-The edge feature vector includes a research-only Potter Doctrine v2 score. It records punchback/retest reclaim state, failed reentry risk, cost-basis hold/reclaim/loss state, and overlap-box stack alignment. These fields are written into edge features and decision records so analog retrieval, scorecards, zero-result diagnostics, and future adaptive policy work can learn from failed or near-miss setups.
+The edge feature vector includes a research-only Potter Doctrine v2 score. It records punchback/retest reclaim state, failed reentry risk, cost-basis hold/reclaim/loss state, and overlap-box stack alignment. A reclaim requires an earlier observable close outside the control followed by a later control-level retest and continuation-side close; a pre-breakout consolidation touch is not a reclaim. Doctrine evidence is versioned, and adaptive policy excludes legacy unversioned scores after semantic corrections instead of mixing incompatible cohorts. These fields are written into edge features and decision records so analog retrieval, scorecards, zero-result diagnostics, and future adaptive policy work can learn from failed or near-miss setups.
 
 Doctrine v2 can improve research ranking, but it does not bypass live safety gates. Promotion still requires setup gates, enough analog samples, positive expectancy, usable feed confidence, and execution-grade options data quality.
 

@@ -3,6 +3,7 @@ import pandas as pd
 from scanner.edge.features import extract_edge_features
 from scanner.strategy.empty_space import score_empty_space
 from scanner.strategy.potter_box import detect_potter_box
+from scanner.strategy.potter_doctrine import DOCTRINE_V2_EVIDENCE_VERSION
 
 
 def _bars():
@@ -66,6 +67,7 @@ def test_extract_edge_features_records_doctrine_v2_state():
     bars = _bars()
     pb = detect_potter_box("TEST", bars)
     doctrine_v2 = {
+        "version": DOCTRINE_V2_EVIDENCE_VERSION,
         "passed": True,
         "score": 78,
         "punchback_state": "reclaim",
@@ -77,6 +79,7 @@ def test_extract_edge_features_records_doctrine_v2_state():
     features = extract_edge_features("TEST", bars, pb, doctrine_v2=doctrine_v2)
 
     assert features["doctrine_v2_passed"] == 1.0
+    assert features["doctrine_v2_version"] == float(DOCTRINE_V2_EVIDENCE_VERSION)
     assert features["doctrine_v2_score"] == 78.0
     assert features["doctrine_v2_box_stack_score"] == 10.0
     assert features["doctrine_v2_punchback_reclaim"] == 1.0

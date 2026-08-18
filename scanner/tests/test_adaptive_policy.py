@@ -1,6 +1,7 @@
 import json
 
 from scanner.learning.adaptive_policy import build_adaptive_policy_report, apply_adaptive_overrides
+from scanner.strategy.potter_doctrine import DOCTRINE_V2_EVIDENCE_VERSION
 
 
 def _research_record(ticker, score, label, ret, day=1, doctrine_score=None, punchback_state=None):
@@ -26,6 +27,7 @@ def _research_record(ticker, score, label, ret, day=1, doctrine_score=None, punc
         record.update(
             {
                 "doctrine_v2_score": doctrine_score,
+                "doctrine_v2_version": DOCTRINE_V2_EVIDENCE_VERSION,
                 "doctrine_v2_passed": doctrine_score >= 70,
                 "doctrine_v2_punchback_state": punchback_state or "fresh_breakout",
                 "doctrine_v2_cost_basis_state": "held",
@@ -132,6 +134,25 @@ def test_adaptive_policy_can_tighten_doctrine_v2_baseline_from_losses():
     assert report["doctrine_v2"]["punchback_states"]["failed_reentry"]["losses"] == 4
     assert report["doctrine_v2"]["recommendation"]["status"] == "tighten_doctrine_v2_baseline"
     assert report["recommendation"]["proposed_overrides"] == {"DOCTRINE_V2_SCORE_BASELINE": 75}
+
+
+def test_adaptive_policy_excludes_legacy_doctrine_scores_after_semantic_change():
+    current = _research_record("CURRENT", 65, "win", 1.0, 1, doctrine_score=75)
+    legacy = _research_record("LEGACY", 65, "loss", -5.0, 2, doctrine_score=80)
+    legacy.pop("doctrine_v2_version")
+
+    report = build_adaptive_policy_report(
+        [current, legacy],
+        current_research_score=80,
+        current_doctrine_score_baseline=75,
+        min_research_samples=8,
+        min_doctrine_samples=8,
+    )
+
+    doctrine = report["doctrine_v2"]
+    assert doctrine["evidence_version"] == DOCTRINE_V2_EVIDENCE_VERSION
+    assert doctrine["legacy_rows_excluded"] == 1
+    assert doctrine["resolved"] == 1
 
 
 def test_adaptive_policy_holds_supported_current_doctrine_baseline_without_noop():

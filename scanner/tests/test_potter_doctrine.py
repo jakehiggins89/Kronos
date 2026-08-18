@@ -51,6 +51,17 @@ def test_doctrine_scores_punchback_reclaim_after_breakout():
     assert "punchback_reclaim" in doctrine["reasons"]
 
 
+def test_doctrine_does_not_call_pre_breakout_control_touch_a_reclaim():
+    bars = _bars([100.0] * 24 + [101.5, 102.0, 104.5])
+
+    doctrine = score_potter_doctrine_v2("TEST", bars, _potter_box(), None)
+
+    assert doctrine["direction"] == "bullish"
+    assert doctrine["punchback_state"] == "fresh_breakout"
+    assert "fresh_breakout" in doctrine["reasons"]
+    assert "punchback_reclaim" not in doctrine["reasons"]
+
+
 def test_doctrine_rejects_failed_punchback_back_inside_box():
     bars = _bars([100.0] * 24 + [104.0, 101.9, 99.4])
 

@@ -20,6 +20,9 @@ Source inputs used:
    - cost-basis held/reclaimed/lost state
    - overlap-box stack alignment across short/medium/long lookbacks
    - risk flags and score diagnostics in edge features and decision records
+   - a reclaim requires an observable earlier close outside control followed
+     by a later control-level retest and continuation-side close; an ordinary
+     pre-breakout consolidation touch is not a reclaim
 
 ## Default Parameters
 - `MIN_BOX_TOP_TOUCHES = 2`

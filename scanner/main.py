@@ -271,6 +271,7 @@ def _data_provenance(bars: pd.DataFrame | None) -> dict:
 def _doctrine_record_fields(doctrine: dict | None) -> dict:
     doctrine = doctrine if isinstance(doctrine, dict) else {}
     return {
+        "doctrine_v2_version": doctrine.get("version"),
         "doctrine_v2_score": doctrine.get("score"),
         "doctrine_v2_passed": bool(doctrine.get("passed")),
         "doctrine_v2_punchback_state": doctrine.get("punchback_state"),

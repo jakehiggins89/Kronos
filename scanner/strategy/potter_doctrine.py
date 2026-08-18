@@ -6,6 +6,9 @@ from typing import Any
 import pandas as pd
 
 
+DOCTRINE_V2_EVIDENCE_VERSION = 2
+
+
 def _as_dict(obj: Any) -> dict:
     if obj is None:
         return {}
@@ -52,12 +55,30 @@ def _punchback_state(bars: pd.DataFrame, direction: str | None, top: float, bott
     if direction == "bullish":
         if latest <= top:
             return "failed_reentry"
-        retested = bool(((prior["Low"] <= top + tolerance) & (prior["High"] >= top - tolerance)).any())
-        return "reclaim" if retested else "fresh_breakout"
+        breakout_seen = False
+        for _, bar in prior.iterrows():
+            close = float(bar["Close"])
+            intersects = float(bar["Low"]) <= top + tolerance and float(bar["High"]) >= top - tolerance
+            # A control touch is a retest only after an earlier close already
+            # established the breakout. The old any-touch heuristic treated a
+            # normal consolidation touch as a post-breakout reclaim and gave
+            # initial breaks the stronger doctrine bonus.
+            if breakout_seen and intersects and close > top:
+                return "reclaim"
+            if close > top:
+                breakout_seen = True
+        return "fresh_breakout"
     if latest >= bottom:
         return "failed_reentry"
-    retested = bool(((prior["High"] >= bottom - tolerance) & (prior["Low"] <= bottom + tolerance)).any())
-    return "reclaim" if retested else "fresh_breakout"
+    breakdown_seen = False
+    for _, bar in prior.iterrows():
+        close = float(bar["Close"])
+        intersects = float(bar["High"]) >= bottom - tolerance and float(bar["Low"]) <= bottom + tolerance
+        if breakdown_seen and intersects and close < bottom:
+            return "reclaim"
+        if close < bottom:
+            breakdown_seen = True
+    return "fresh_breakout"
 
 
 def _cost_basis_state(bars: pd.DataFrame, direction: str | None, cost_basis: float) -> str:
@@ -101,6 +122,7 @@ def score_potter_doctrine_v2(ticker: str, bars: pd.DataFrame, potter_box: Any, e
     es = _as_dict(empty_space)
     if bars is None or bars.empty:
         return {
+            "version": DOCTRINE_V2_EVIDENCE_VERSION,
             "ticker": ticker,
             "passed": False,
             "score": 0,
@@ -163,6 +185,7 @@ def score_potter_doctrine_v2(ticker: str, bars: pd.DataFrame, potter_box: Any, e
     final_score = int(max(0.0, min(100.0, round(score))))
     passed = final_score >= 70 and "failed_reentry" not in risk_flags and "cost_basis_lost" not in risk_flags
     return {
+        "version": DOCTRINE_V2_EVIDENCE_VERSION,
         "ticker": ticker,
         "passed": passed,
         "score": final_score,

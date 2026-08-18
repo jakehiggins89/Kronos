@@ -26,6 +26,7 @@ from ..edge.stats import (
     day_clustered_t,
     wilson_lower_bound as _wilson_lower_bound,
 )
+from ..strategy.potter_doctrine import DOCTRINE_V2_EVIDENCE_VERSION
 from .outcome_store import deduplicate_decisions
 from .trial_registry import record_trial
 
@@ -203,6 +204,15 @@ def _doctrine_risk_flag_counts(rows: list[dict]) -> dict[str, int]:
     return dict(counts)
 
 
+def _doctrine_evidence_version(row: dict) -> int:
+    value = row.get("doctrine_v2_version")
+    if value is None:
+        diagnostics = row.get("doctrine_v2_diagnostics")
+        if isinstance(diagnostics, dict):
+            value = diagnostics.get("version")
+    return int(_finite_float(value, 0.0))
+
+
 def _build_doctrine_v2_policy(
     rows: list[dict],
     *,
@@ -211,7 +221,12 @@ def _build_doctrine_v2_policy(
     min_wilson_win_rate: float,
     min_average_return_pct: float,
 ) -> dict:
-    doctrine_rows = [row for row in rows if row.get("doctrine_v2_score") is not None]
+    all_doctrine_rows = [row for row in rows if row.get("doctrine_v2_score") is not None]
+    doctrine_rows = [
+        row
+        for row in all_doctrine_rows
+        if _doctrine_evidence_version(row) >= DOCTRINE_V2_EVIDENCE_VERSION
+    ]
     threshold_candidates = []
     for threshold in _generic_threshold_grid(current_doctrine_score_baseline, DOCTRINE_V2_SCORE_BASELINE_BOUNDS):
         selected = [row for row in doctrine_rows if _finite_float(row.get("doctrine_v2_score"), -1.0) >= threshold]
@@ -304,6 +319,8 @@ def _build_doctrine_v2_policy(
             }
 
     return {
+        "evidence_version": DOCTRINE_V2_EVIDENCE_VERSION,
+        "legacy_rows_excluded": len(all_doctrine_rows) - len(doctrine_rows),
         "resolved": len(doctrine_rows),
         "independent_resolved": len(independent_doctrine_rows),
         "evidence_independence": doctrine_independence,

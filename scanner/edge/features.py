@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FEATURE_VERSION = 3
+FEATURE_VERSION = 4
 
 
 def _as_dict(obj: Any) -> dict:
@@ -168,6 +168,7 @@ def extract_edge_features(
         "distance_to_target_pct": _finite_float(es.get("distance_to_target_pct")),
         "risk_pct": _finite_float(es.get("risk_pct")),
         "doctrine_v2_passed": _flag(doctrine.get("passed")),
+        "doctrine_v2_version": _finite_float(doctrine.get("version")),
         "doctrine_v2_score": _finite_float(doctrine.get("score")),
         "doctrine_v2_box_stack_score": _finite_float(doctrine.get("box_stack_score")),
         "doctrine_v2_punchback_reclaim": _flag(punchback_state == "reclaim"),
