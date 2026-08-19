@@ -210,6 +210,10 @@ def test_mature_negative_gates_call_for_strategy_redesign_not_more_samples(tmp_p
     markdown, _payload = build_daily_brief(tmp_path)
 
     assert text.splitlines()[1] == "No operator action. Strategy evidence is negative."
+    assert "UNLOCK - current design negative" in text
+    assert "not yet" not in text
+    assert "ranking evidence is negative out of sample" in text
+    assert "score doesn't rank winners yet" not in text
     assert "Legacy threshold-55 gate (NEGATIVE)" in markdown
     assert "Ranking gate (NEGATIVE)" in markdown
     assert "needs more resolved samples" not in next_action

@@ -802,10 +802,24 @@ def _unlock_block(audit: dict, policy: dict, diagnostic: dict) -> list[str]:
     lift = policy.get("kronos_lift", {})
 
     passed = bool(ranking.get("passed"))
-    lines = [f"UNLOCK - {'gates pass' if passed else 'not yet'}"]
+    mature_negative = _mature_negative_edge(audit)
+    if passed:
+        unlock_status = "gates pass"
+        ranking_suffix = ""
+    elif mature_negative:
+        # Adequately sampled negative evidence is a completed falsification of
+        # the current design, not an immature gate that is merely "not yet"
+        # ready. The phone brief must preserve the same distinction as the
+        # detailed markdown because this is the surface an operator sees.
+        unlock_status = "current design negative"
+        ranking_suffix = " - ranking evidence is negative out of sample"
+    else:
+        unlock_status = "not yet"
+        ranking_suffix = " - score doesn't rank winners yet"
+    lines = [f"UNLOCK - {unlock_status}"]
     lines.append(
         f"Rank IC {_fmt(value.get('rank_ic'), 3)} (needs {_fmt(value.get('min_rank_ic'), 2)})"
-        + ("" if passed else " - score doesn't rank winners yet")
+        + ranking_suffix
     )
     lines.append(
         f"Journal {_int(research.get('resolved'))} resolved, "
