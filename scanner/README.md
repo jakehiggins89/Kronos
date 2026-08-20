@@ -1,8 +1,17 @@
 # Potter Box Scanner V1
 
+> [!CAUTION]
+> **RETIRED 2026-08-20.** The trading strategy and daily go-live program failed
+> their mature out-of-sample evidence gates and are no longer active. Live mode
+> is hard-blocked by `scanner/RETIRED.json`, scheduled research is disabled, and
+> daily Telegram briefs default off. The code and evidence remain available for
+> audit only. See `docs/RETIREMENT-2026-08-20.md`; revival requires a genuinely
+> new preregistered strategy and new post-retirement confirmation data.
+
 Local Windows Python scanner that identifies Potter Box-style options setups and sends Telegram alerts only when every gate passes.
 
 ## Safety Defaults
+- Retired state is checked before every live preflight; environment flags and a passing audit cannot bypass it.
 - Dry-run is default.
 - Fail closed on missing/uncertain data.
 - Live alerting requires both `--mode live` and `LIVE_MODE_ENABLED=true`.

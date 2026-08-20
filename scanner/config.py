@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
+RETIREMENT_MARKER_PATH = ROOT_DIR / "RETIRED.json"
 LOG_DIR = ROOT_DIR / "logs"
 REPORT_DIR = ROOT_DIR / "reports"
 EVIDENCE_DIR = REPORT_DIR / "evidence"
@@ -72,10 +73,10 @@ KRONOS_SAMPLE_COUNT = 10
 # so the model's lift was unmeasurable.
 KRONOS_RESEARCH_ENABLED = True
 
-# Send the condensed daily brief to Telegram when credentials are configured.
-# This is a status report, not a trade alert; live alerting stays behind the
-# evidence-gated live-mode checks.
-BRIEF_TELEGRAM_ENABLED = True
+# The scanner strategy was retired on 2026-08-20 after mature-negative
+# out-of-sample evidence. Manual research remains available for audit, but no
+# scheduled status message should imply that the go-live program is active.
+BRIEF_TELEGRAM_ENABLED = False
 
 MINIMAX_ENABLED_DEFAULT = False
 MINIMAX_MODEL = "MiniMax-M2.7-highspeed"

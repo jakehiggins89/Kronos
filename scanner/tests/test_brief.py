@@ -607,8 +607,9 @@ def test_build_daily_brief_survives_missing_reports(tmp_path):
     assert "No scan data yet" in markdown
 
 
-def test_run_brief_writes_markdown_file(tmp_path, capsys):
+def test_run_brief_writes_markdown_file(tmp_path, capsys, monkeypatch):
     _write_reports(tmp_path)
+    monkeypatch.setattr("scanner.brief.scanner_config.BRIEF_TELEGRAM_ENABLED", True)
 
     payload = run_brief(logging.getLogger("test"), report_dir=tmp_path)
 
@@ -622,6 +623,7 @@ def test_run_brief_writes_markdown_file(tmp_path, capsys):
 
 def test_run_brief_sends_condensed_telegram_when_configured(tmp_path, monkeypatch):
     _write_reports(tmp_path)
+    monkeypatch.setattr("scanner.brief.scanner_config.BRIEF_TELEGRAM_ENABLED", True)
     sent = {}
 
     def fake_send(token, chat_id, message, logger):
@@ -647,6 +649,7 @@ def test_run_brief_sends_condensed_telegram_when_configured(tmp_path, monkeypatc
 
 def test_run_brief_telegram_failure_never_raises(tmp_path, monkeypatch):
     _write_reports(tmp_path)
+    monkeypatch.setattr("scanner.brief.scanner_config.BRIEF_TELEGRAM_ENABLED", True)
 
     def boom(token, chat_id, message, logger):
         raise RuntimeError("telegram down")

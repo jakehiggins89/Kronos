@@ -6,7 +6,7 @@ Start here. This repository is a fork of the upstream [Kronos](https://github.co
 |---|---|---|---|
 | Kronos foundation model (upstream) | Financial K-line time-series model this fork builds on | `model/` | [README.md](README.md) |
 | Desktop forecasting app | Local one-click Streamlit chart forecaster | `kronos_app.py` via `launch_kronos.bat` | [README_JAKE.md](README_JAKE.md) |
-| Potter Box scanner / evidence lab | Fail-closed options scanner + evidence engine — **the active center of this repo** | `python -m scanner.main` via `scanner/run_scanner.bat` | [scanner/README.md](scanner/README.md) — the live docs |
+| Potter Box scanner / evidence lab | **Retired trading strategy**; preserved fail-closed research archive | `python -m scanner.main` via `scanner/run_scanner.bat` | [scanner/README.md](scanner/README.md) and [retirement record](docs/RETIREMENT-2026-08-20.md) |
 
 ## Environment truth
 
@@ -17,7 +17,7 @@ Start here. This repository is a fork of the upstream [Kronos](https://github.co
 
 ## For agents — guardrails that outlive any session
 
-- The scanner is **fail-closed by design**. Zero signals or `readiness: blocked` is a normal, honest state — never loosen thresholds, weaken gates, or force alerts to "fix" it. Operating rules live in [scanner/README.md](scanner/README.md).
+- The scanner strategy is **retired and fail-closed**. Never remove `scanner/RETIRED.json`, re-enable its schedules, loosen thresholds, weaken gates, or force alerts unless every revival criterion in [the retirement record](docs/RETIREMENT-2026-08-20.md) has been met and a human explicitly authorizes revival.
 - No profit claims from toy validation. Live alerting requires `--mode live` + valid Telegram credentials + `LIVE_MODE_ENABLED=true` + a passing readiness audit — do not shortcut any of them.
 - Data-quality tiers are enforced by the scanner's gates; don't bypass or spoof them.
 - Verify before claiming anything works:

@@ -56,6 +56,7 @@ from .config import (
     META_MODEL_PATH,
     PRED_DAYS,
     REPORT_DIR,
+    RETIREMENT_MARKER_PATH,
     SYNTHETIC_SESSION_ANCHOR_HOUR,
     SYNTHETIC_SESSION_ANCHOR_MINUTE,
     TIMEZONE,
@@ -469,6 +470,14 @@ def _write_zero_result_diagnostic(logger) -> dict:
 
 
 def _preflight_checks(mode: str, env: dict, logger) -> bool:
+    if mode == "live" and RETIREMENT_MARKER_PATH.is_file():
+        logger.error(
+            "Preflight failed: the Potter Box scanner is retired and live mode is permanently "
+            "disabled by %s. See docs/RETIREMENT-2026-08-20.md for the evidence and explicit "
+            "revival criteria.",
+            RETIREMENT_MARKER_PATH,
+        )
+        return False
     provider = env["market_data_provider"]
     if provider == "alpaca" and (not env["alpaca_key"] or not env["alpaca_secret"]):
         logger.error(

@@ -139,6 +139,53 @@ def test_live_preflight_blocks_stale_audit(monkeypatch, tmp_path):
     assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
 
 
+def test_live_preflight_blocks_retired_scanner_before_other_live_gates(monkeypatch, tmp_path):
+    retirement_path = tmp_path / "RETIRED.json"
+    retirement_path.write_text(
+        json.dumps({"status": "retired", "retired_at": "2026-08-20T11:00:00-05:00"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "RETIREMENT_MARKER_PATH", retirement_path, raising=False)
+    audit_path = tmp_path / "edge_audit_report.json"
+    completed_at = datetime.now(timezone.utc).isoformat()
+    audit_path.write_text(
+        json.dumps(
+            {
+                "readiness": "paper_trade_only",
+                "blockers": [],
+                "warnings": [],
+                "evidence_provenance": {
+                    "scan_completed_at": completed_at,
+                    "validation_completed_at": completed_at,
+                    "scan_run_id": "current-run",
+                    "validation_run_id": "current-run",
+                    "scan_runtime_fingerprint": "sha256:current-runtime",
+                    "validation_runtime_fingerprint": "sha256:current-runtime",
+                    "runtime_fingerprint": "sha256:current-runtime",
+                },
+                "summary": {
+                    "promotable_directions": ["bullish"],
+                    "execution_ready_promoted_candidates": ["TEST"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scanner_main, "EDGE_AUDIT_REPORT_PATH", audit_path)
+    monkeypatch.setattr(scanner_main, "_edge_runtime_fingerprint", lambda: "sha256:current-runtime")
+    env = {
+        "market_data_provider": "auto",
+        "alpaca_key": "key",
+        "alpaca_secret": "secret",
+        "telegram_token": "token",
+        "telegram_chat_id": "chat",
+        "live_mode_enabled": True,
+        "minimax_api_key": "",
+    }
+
+    assert scanner_main._preflight_checks("live", env, scanner_main.setup_logging(tmp_path)) is False
+
+
 def test_live_preflight_blocks_fresh_file_rewritten_from_stale_evidence(monkeypatch, tmp_path):
     audit_path = tmp_path / "edge_audit_report.json"
     stale_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()

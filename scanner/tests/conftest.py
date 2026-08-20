@@ -16,6 +16,7 @@ def _isolate_mutable_runtime_state(monkeypatch, tmp_path):
     # a green verification run must not change the evidence it is verifying.
     report_dir = tmp_path / "reports"
     tuning_dir = tmp_path / "tuning"
+    retirement_marker_path = tmp_path / "RETIRED.json"
     report_paths = {
         "EDGE_INDEX_PATH": report_dir / "edge_retrieval_index.json",
         "EDGE_SCAN_REPORT_PATH": report_dir / "edge_scan_report.json",
@@ -27,12 +28,14 @@ def _isolate_mutable_runtime_state(monkeypatch, tmp_path):
     monkeypatch.setattr("scanner.config.REPORT_DIR", report_dir)
     monkeypatch.setattr("scanner.config.EVIDENCE_DIR", report_dir / "evidence")
     monkeypatch.setattr("scanner.config.TUNING_DIR", tuning_dir)
+    monkeypatch.setattr("scanner.config.RETIREMENT_MARKER_PATH", retirement_marker_path)
     monkeypatch.setattr("scanner.config.OVERRIDES_PATH", tuning_dir / "overrides.json")
     for name, path in report_paths.items():
         monkeypatch.setattr(f"scanner.config.{name}", path)
 
     monkeypatch.setattr("scanner.main.REPORT_DIR", report_dir)
     monkeypatch.setattr("scanner.main.EVIDENCE_DIR", report_dir / "evidence")
+    monkeypatch.setattr("scanner.main.RETIREMENT_MARKER_PATH", retirement_marker_path)
     for name, path in report_paths.items():
         monkeypatch.setattr(f"scanner.main.{name}", path, raising=False)
 

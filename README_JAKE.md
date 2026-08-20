@@ -13,7 +13,7 @@ Three products share this repo — this file covers only the desktop forecasting
 |---------|------|
 | Upstream Kronos model (`model/`) | [README.md](README.md) |
 | **Desktop forecasting app** (`kronos_app.py`) | this file |
-| Potter Box scanner / evidence lab (`scanner/`) — the active project | [scanner/README.md](scanner/README.md) (live docs) |
+| Potter Box scanner / evidence lab (`scanner/`) — retired strategy archive | [retirement record](docs/RETIREMENT-2026-08-20.md) |
 
 Full orientation: [REPO_MAP.md](REPO_MAP.md)
 
