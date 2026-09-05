@@ -90,3 +90,8 @@ scanner/tuning/*.json
 webui/prediction_results/
 
 scanner/reports/daily_brief.md
+
+# Potter v3 research bar cache (rebuilt from Alpaca on demand)
+scanner/reports/potter_v3_cache/
+scanner/reports/potter_v3/
+scanner/research/experiments/**/bars_cache.pkl

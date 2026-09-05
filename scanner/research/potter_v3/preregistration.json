@@ -1,0 +1,289 @@
+{
+ "registered_at": "2026-09-05T11:35:00-04:00",
+ "as_of": "2026-09-05T00:00:00-04:00",
+ "universe": [
+  "SOFI",
+  "MARA",
+  "RIOT",
+  "HIMS",
+  "TTD",
+  "SOUN",
+  "UPST",
+  "SNAP",
+  "LYFT",
+  "RIVN",
+  "GME",
+  "AAL",
+  "CCL",
+  "PFE",
+  "T",
+  "F",
+  "KEY",
+  "OPEN",
+  "CHPT",
+  "NIO",
+  "CLSK",
+  "CIFR",
+  "LUNR",
+  "BBAI",
+  "EVGO",
+  "PLTR",
+  "HOOD",
+  "RKLB",
+  "AFRM",
+  "IONQ",
+  "AMD",
+  "INTC",
+  "MU",
+  "MRVL",
+  "PYPL",
+  "UBER",
+  "ROKU",
+  "PINS",
+  "DKNG",
+  "PLUG",
+  "LCID",
+  "BAC",
+  "WFC",
+  "C",
+  "DAL",
+  "UAL",
+  "JBLU",
+  "CLF",
+  "VALE",
+  "GOLD",
+  "KGC",
+  "AGNC",
+  "ET",
+  "PBR",
+  "CVS"
+ ],
+ "input_bar_file_sha256": {
+  "SOFI": "5fe06ba4cf78b2a9e816b58ae92c088b8db655fe2a6d6136bea515f6436f17b9",
+  "MARA": "4a2cf6d1cde1c2fd5e53467276660ac2fdea3012662537a2733c1a90a29eb03c",
+  "RIOT": "359d1890af58b8842ef114e4e4e96dff1d52c7b755d01181750665be97f0d8ca",
+  "HIMS": "57839c7835c27d299fd811463701a6ce6bb1b093ca1407b1e9ad4029b2aa2707",
+  "TTD": "a5be20e69227fae4ea463908c1a59d76034064b20dc0a6461434ee5603703540",
+  "SOUN": "4d2464ad4234a429dee4c997b2d4aad0c7672d2b487f24a743e0f8769fe852df",
+  "UPST": "7e3ea52b388ae9876fc6d134f3b508c14951436bd90c3b4c474825fb855a2d87",
+  "SNAP": "28fca570510168b51809d85b4fed0ce81392e4d2acc2da3974cd1aff12e7d3b5",
+  "LYFT": "314def09bbad9ba1aab9e249947e4913dda4bf73f1b3eafcf8f59007fa21be1e",
+  "RIVN": "949ce42ecaef4406e1c464f0a8add5b680fbf05a446ada17879901752f1612a2",
+  "GME": "1dd2ca5e82eae129536c2c0e9a62ec5fbaa58cd8545e776556424b7fc67dd116",
+  "AAL": "e343c3ea4f9769e786d2450c8b9c74f58151dc381a777c6f7945ec1cf5af136b",
+  "CCL": "af0905a4296956f4d7fdceda1edce681f2d5aad9ceb06068506c42ed42e9cc66",
+  "PFE": "0b3269c8ccdbe9285a9a31765ca4fd7cc9369dc1df26a3b8a6978d06a8672588",
+  "T": "17c2a572bf3d50bdafcb3807b33725b863fad7b0927dc59be0efbaf03194cfd4",
+  "F": "06f99e45fccf9b80ee509a166bf99c76f8aa278cab19212081ff01dc9c0371e8",
+  "KEY": "bde465722d66614f48804a5c2ee93353ff0f45063c6cebb8b28e5fcbf48d4707",
+  "OPEN": "17df879e1ed60ed1e65eb428dbaabaabbd605b5583108fda67e013f29eddec41",
+  "CHPT": "2ca7f55704c6e6afc91f9fe41713618d3620c7632118e1a1fe55f4594ad8453d",
+  "NIO": "305820f71d1dbfbf04cf34156a423f800e0a06c9b15f4111c736b3bad65e70cd",
+  "CLSK": "3356d94ce7b6b6ea0e4a29662aa122032f22cc7713f5f8cbafbe4b5119a000af",
+  "CIFR": "92cc4848fca3abd45f913e02a450a8552882a350eaa943be3cfa8aa7d3c8525b",
+  "LUNR": "68a99efe5c149795c92a5fdd76f93c0d4f1ed98aaf25eb3ab279082adf63abf0",
+  "BBAI": "05e56715309aa024cd89e6b38af04db0f37cad24d48f0286557434b0d0210584",
+  "EVGO": "8112535496b2f81e1918bfe350a9f86bd78b580945e28abecce780b0c2bde74c",
+  "PLTR": "5a43378dcec1bf4cccf967fb0d5a0143c5e2a368fcbaafad77fb0e6d39c61c89",
+  "HOOD": "708bbe3a598d3dd0bc8226565b215f4a166595a42413031069a86c14638eee56",
+  "RKLB": "b2bb6a7d125b97156ce407124b817e99c0c58ad66be23b7d158001a74ee42b66",
+  "AFRM": "94848528cc6fdc107f17ee9c34581ce421220dbb022dc3c085850d6a583a6ed2",
+  "IONQ": "c27faccd72b39322596bb73a02971302cce9c99c86ff8b2ac911490b26356b67",
+  "AMD": "62a1dc79ec5d0a65c8edb85f868a486f135e904c6d8d9b005d72ac44c039fdd8",
+  "INTC": "f0ba4ac3011b7ffddd5d82df0415b5c27c78b22c5abcfcada38645482bac72e9",
+  "MU": "b73510fa65c1e3e9b4ecd41e572377d44d74ff8c3a5540fa0c3a816e086c4d63",
+  "MRVL": "76f3507e150e197e652dc51bbacb2fa67828bec7fcb10e3b7ea9c67941b10c0c",
+  "PYPL": "57a27934d4ae20fbb7ef2c87ba80006caad13f145da5e30fd71c973d477b56c0",
+  "UBER": "0bb955585e44b333a2b48a76ff9e54c7be20768ff3d3b9709c19fa060a1f6cd2",
+  "ROKU": "e58e178b4653cddf8d0d205ecf58b08e0b7a1e95a16be34b9340dc9ccb6afb60",
+  "PINS": "ebcce2443f771010c082403aa5522d0c48ae4cc29a8311d79322132ce3ca80d7",
+  "DKNG": "f631cc291235f4d5032c6bff9b1563ebb8b247a20ca4b4b77405b264bbf16ea2",
+  "PLUG": "9cecdf9822107b03bc02a1a9d80bb3535b2b86d5b80d85bd973dc46e4cf96a0b",
+  "LCID": "f6c6380da4f579dee4d31f323a6fad568d605467fbd44b17d3cc55a61eb14468",
+  "BAC": "ff58d55610ded290dc4c5eb899f0f47458655bc77eda625d458ee13eeddbd46d",
+  "WFC": "aa5ba136e73881c6f7adb96469bd0bc4165f0279e24cadb9381fcc936d53dd61",
+  "C": "29c00ca521a669ff544be3ae493a299ba11bb2376c6b9b12c56a9decd4136030",
+  "DAL": "cafd11162f1976763811cfbe2a36e29a427a7bc0a990e693eba538d214537cf3",
+  "UAL": "4cf0363d39b5b5fce9eab79f115f857bff5bad80d845b89cd1e6a98433772d67",
+  "JBLU": "9217d65ff6c4ae700ff7a366765158bd1dbb6b13cc43d44f18f2a3e6fbd34c98",
+  "CLF": "5818a5aad4373d7ce61ac3d0f3dce97ad2a69a07dbd00f3f3d22c177436f1768",
+  "VALE": "aeac44cb19cc91ad184c90b579658c661ef9006539708768150276d3751372a9",
+  "GOLD": "15fa6469c5c9526282c7c47595666ff01f9cb20d975df13ef63becbf54762aa0",
+  "KGC": "a107a882e5b761fac2b63a1198e7110965e7bfe377afaa41b5cc2a6b5b329ebf",
+  "AGNC": "3ea3bab3a430f7ecc21b99760a08cd1019eaec21f36b30408280c7dfe571954b",
+  "ET": "6bfee99a0e4b66255688d056d80f7d7f62470e5d4512cf919e5d5c03a0172353",
+  "PBR": "c5ba21668719783d1968db972e006ddd98b98f20e1208125fefedfe54e4a967b",
+  "CVS": "897848ed982420093b40c83962f011f8bc4608265e1e94a80ba44a58afe99537"
+ },
+ "bars": {
+  "provider": "alpaca",
+  "feed": "sip",
+  "interval": "30m",
+  "days": 740,
+  "adjustment": "split",
+  "session": "04:00-20:00 ET",
+  "reading_cutoff": "16:00 ET"
+ },
+ "box_rules": {
+  "min_sessions": 5,
+  "max_sessions": 30,
+  "touch_tolerance_fraction": 0.15,
+  "min_waves": 2,
+  "min_height_pct": 1.0,
+  "structure_lookback_sessions": 250
+ },
+ "trigger_rules": {
+  "punchback_lookback_sessions": 10,
+  "box_void_heights": 1.0,
+  "box_max_age_sessions": 40,
+  "hold_sessions": 3,
+  "risk_pct_bounds": [
+   0.5,
+   15.0
+  ],
+  "kinds": [
+   "breakout",
+   "punchback_bull",
+   "cb_break_bull",
+   "floor_reclaim",
+   "breakdown",
+   "punchback_bear",
+   "cb_break_bear",
+   "ceiling_reject"
+  ]
+ },
+ "outcome_rules": {
+  "horizons": [
+   1,
+   3,
+   5
+  ],
+  "primary_horizon": 3,
+  "morning_exit": "10:30 ET",
+  "stop": "24h close through the defining level, executed at next regular open",
+  "stock_cost_bps_per_side": 25,
+  "contract": {
+   "dte_bull": 10,
+   "dte_bear": 14,
+   "spread_bps_per_side": 1000.0,
+   "premium_floor": 0.05,
+   "vol_window": 20,
+   "vol_multiple": 1.0,
+   "strike": "target-based"
+  }
+ },
+ "placebo": {
+  "seed": 20260905,
+  "design": "same day, same direction, same percent geometry, universe name with no trigger that day"
+ },
+ "primary_cell": "punchback_bull",
+ "acceptance": {
+  "min_entry_days": 60,
+  "min_hac_t_net_return": 2.0,
+  "min_hac_t_vs_control": 2.0,
+  "min_precision_lower_bound": 0.45
+ },
+ "cells": {
+  "punchback_bull": {
+   "kinds": [
+    "punchback_bull"
+   ],
+   "direction": "bullish"
+  },
+  "cb_break_bull": {
+   "kinds": [
+    "cb_break_bull"
+   ],
+   "direction": "bullish"
+  },
+  "breakout_es1plus": {
+   "kinds": [
+    "breakout"
+   ],
+   "direction": "bullish",
+   "min_empty_space_score": 1
+  },
+  "breakout_all": {
+   "kinds": [
+    "breakout"
+   ],
+   "direction": "bullish"
+  },
+  "floor_reclaim": {
+   "kinds": [
+    "floor_reclaim"
+   ],
+   "direction": "bullish"
+  },
+  "punchback_bear": {
+   "kinds": [
+    "punchback_bear"
+   ],
+   "direction": "bearish"
+  },
+  "cb_break_bear": {
+   "kinds": [
+    "cb_break_bear"
+   ],
+   "direction": "bearish"
+  },
+  "breakdown_es1plus": {
+   "kinds": [
+    "breakdown"
+   ],
+   "direction": "bearish",
+   "min_empty_space_score": 1
+  },
+  "breakdown_all": {
+   "kinds": [
+    "breakdown"
+   ],
+   "direction": "bearish"
+  },
+  "ceiling_reject": {
+   "kinds": [
+    "ceiling_reject"
+   ],
+   "direction": "bearish"
+  },
+  "punchback_bull_confirmed_24h": {
+   "kinds": [
+    "punchback_bull"
+   ],
+   "direction": "bullish",
+   "confirmed_24h": true
+  },
+  "all_bullish": {
+   "kinds": [
+    "breakout",
+    "punchback_bull",
+    "cb_break_bull",
+    "floor_reclaim"
+   ],
+   "direction": "bullish"
+  },
+  "all_bearish": {
+   "kinds": [
+    "breakdown",
+    "punchback_bear",
+    "cb_break_bear",
+    "ceiling_reject"
+   ],
+   "direction": "bearish"
+  }
+ },
+ "falsification": "any failed gate on the primary cell = no edge as encoded; retirement stands; no parameter is changed and re-run",
+ "code_files_sha256": {
+  "scanner/potter_v3/__init__.py": "486d2aa71f9e4a4be51e7b7cc72e80bc05ba6ad9f8b88e8509a9501fbcf011f8",
+  "scanner/potter_v3/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+  "scanner/potter_v3/boxes.py": "4a17c18ac84c56868c02ce67ede9c4cabc85e2013b4c62f1b4007bb47265f304",
+  "scanner/potter_v3/cli.py": "aa216cb2531f493b33900cdc946fbc44e3afff99d6cd9d90a0a9f4ef9d708984",
+  "scanner/potter_v3/env.py": "68f3884e6f6a322c44ebd65233023dbff8638973cbcd957cc632e364a22ccb6d",
+  "scanner/potter_v3/evaluate.py": "3bbb7a8b885af9f444163152954cc1b628d8c3d5cd68ba7f45b3cd1480790df9",
+  "scanner/potter_v3/options_model.py": "9fd8a4ea4ff81a355ac3674e1f266e2fcff028804e6503c2ed54c82778b67464",
+  "scanner/potter_v3/outcomes.py": "460d69c857e3de1224b1fee3a61ecde2429c0defe429360c8657ebca89077df8",
+  "scanner/potter_v3/pipeline.py": "e7570a1f773d6ec5dba01d0ada249404fd0665e1b20e588a4e9eae6ec7f84dbb",
+  "scanner/potter_v3/sessions.py": "528478514d5bd9107ffc76922521e8f8d1576995baaeec0daf28faad5eeca92d",
+  "scanner/potter_v3/triggers.py": "635941574de9d07129ed4c7db812e2735e5caf4e94fb6898f75f737ec5e886fb"
+ }
+}
