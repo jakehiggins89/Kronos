@@ -173,3 +173,17 @@ def test_cli_build_and_evaluate_roundtrip(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "potter_v3" / "records.json").exists()
     assert CLI.main(["--mode", "evaluate"]) == 3  # toy fixture cannot pass the gates
     assert (tmp_path / "potter_v3" / "evaluation.md").exists()
+
+
+def test_load_ticker_keeps_today_after_1600_and_reports_24h_completeness(monkeypatch):
+    intraday = _intraday_from_sessions(_box_rows([(20.6, 21.3, 21.4, 21.4, 20.5)]))
+    last_day = intraday.index[-1].normalize()
+    monkeypatch.setattr(P.S, "load_intraday_eth", lambda ticker, as_of=None, use_cache=True: intraday[intraday.index <= (as_of or intraday.index[-1])])
+    at_1605 = last_day + pd.Timedelta(hours=16, minutes=5)
+    td = P.load_ticker("AAA", as_of=at_1605)
+    assert td.full.index[-1] == last_day and td.last_session_complete is False
+    at_1530 = last_day + pd.Timedelta(hours=15, minutes=30)
+    td_early = P.load_ticker("AAA", as_of=at_1530)
+    assert td_early.full.index[-1] < last_day
+    at_2005 = last_day + pd.Timedelta(hours=20, minutes=5)
+    assert P.load_ticker("AAA", as_of=at_2005).last_session_complete is True

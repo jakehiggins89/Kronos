@@ -19,6 +19,36 @@ Local Windows Python scanner that identifies Potter Box-style options setups and
 - `paper_trade_only` additionally requires current equity-delay provenance (at most one minute), a consolidated-capable feed, and execution-grade Tradier OPRA evidence. The free 16-minute historical SIP route remains research-only even though its consolidated coverage has high confidence.
 - Secrets are loaded from `.env` only (do not hardcode keys/tokens in code).
 
+## Potter v3 research path (2026-09-05)
+`scanner/potter_v3/` is a sibling package that measures the Potter Box method
+as the primary sources actually describe it, because the retired detector never
+did (see `scanner/research/potter_v3/METHOD_SPEC_FROM_SOURCES.md` for the
+rule-by-rule spec and `CODE_GAP_MAP.md` for where the old code diverged). It
+reads 24-hour extended-hours sessions built from Alpaca SIP 30-minute bars,
+draws body-extreme boxes with rejection waves, fires the method's triggers
+(breakout, cost-basis break, punch back, reclaim) at the 16:00 close, manages
+each trade with structure targets, the 50% empty-space trim, 24h-close stops
+and a 10:30 exit, prices a target-based option contract beside the stock leg,
+and pairs every trigger with a same-day drift control. The evaluation is
+pre-registered (`PREREGISTRATION.md` / `preregistration.json`) with one primary
+cell; results live in `RESULTS.md`.
+
+It never reads `RETIRED.json`, never sends an alert, and never writes to the
+retired lab's report paths. Its output is research, not a signal.
+
+```bat
+.\venv\Scripts\python.exe -m scanner.potter_v3 --mode build --as-of 2026-09-05T00:00:00
+.\venv\Scripts\python.exe -m scanner.potter_v3 --mode evaluate
+.\venv\Scripts\python.exe -m scanner.potter_v3 --mode scan
+scanner\potter_v3\run_potter_v3_scan.bat
+```
+
+`build` writes `scanner\reports\potter_v3\records.json`; `evaluate` writes
+`evaluation.json` / `evaluation.md` beside it and exits 3 when the primary cell
+fails its gates; `scan` prints today's triggers on the universe under a
+research banner and writes `latest_scan.json`. Bars cache incrementally under
+`scanner\reports\potter_v3_cache\` (one small request per name per day).
+
 ## Setup
 ```bat
 cd /d C:\Users\Jacob Higgins\projects\kronos-predictor

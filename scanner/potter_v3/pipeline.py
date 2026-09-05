@@ -45,14 +45,19 @@ class TickerData:
     full: pd.DataFrame
     partial: pd.DataFrame
     day_table: pd.DataFrame
+    last_session_complete: bool = True
 
 
 def load_ticker(ticker: str, *, as_of: pd.Timestamp | None = None, use_cache: bool = True) -> TickerData:
+    """Sessions for one name. The last date is kept once 16:00 ET has passed
+    (the reading candle exists); whether its 24h candle is finished is
+    reported separately so a scan can say "confirmation pending"."""
     intraday = S.load_intraday_eth(ticker, as_of=as_of, use_cache=use_cache)
-    full = S.drop_in_progress_session(S.build_eth_sessions(intraday), now=as_of)
+    full = S.drop_in_progress_session(S.build_eth_sessions(intraday), now=as_of, cutoff=S.RTH_CLOSE)
     partial = S.build_partial_sessions(intraday)
     partial = partial[partial.index.isin(full.index)]
-    return TickerData(ticker=ticker, intraday=intraday, full=full, partial=partial, day_table=build_day_table(intraday))
+    complete = bool(len(full) == 0 or S.session_is_complete(full.index[-1], now=as_of))
+    return TickerData(ticker=ticker, intraday=intraday, full=full, partial=partial, day_table=build_day_table(intraday), last_session_complete=complete)
 
 
 def _with_horizon(trigger: Trigger, horizon: int) -> Trigger:

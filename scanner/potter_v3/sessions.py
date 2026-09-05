@@ -165,21 +165,33 @@ def build_eth_sessions(intraday: pd.DataFrame) -> pd.DataFrame:
     return sessions
 
 
-def drop_in_progress_session(sessions: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Drop the last session if the extended session has not ended yet.
+def drop_in_progress_session(
+    sessions: pd.DataFrame,
+    now: pd.Timestamp | None = None,
+    cutoff: tuple[int, int] = EXTENDED_SESSION_END,
+) -> pd.DataFrame:
+    """Drop the last session if the clock has not passed ``cutoff`` on its date.
 
-    Completion is judged by the clock (20:00 ET has passed), not by whether a
-    19:30 bar printed: thin names often show no prints in the last half hour
-    and must not lose their whole day for it.
+    Completion is judged by the clock, not by whether a 19:30 bar printed:
+    thin names often show no prints in the last half hour and must not lose
+    their whole day for it. The research build uses the 20:00 session end;
+    the daily scan uses 16:00, because the reading candle is complete then
+    even though the 24-hour candle is still forming.
     """
     if sessions is None or sessions.empty:
         return sessions
     current = _now(now)
     last_date = pd.Timestamp(sessions.index[-1])
-    session_end = last_date.normalize() + pd.Timedelta(hours=EXTENDED_SESSION_END[0], minutes=EXTENDED_SESSION_END[1])
+    session_end = last_date.normalize() + pd.Timedelta(hours=cutoff[0], minutes=cutoff[1])
     if current < session_end:
         return sessions.iloc[:-1]
     return sessions
+
+
+def session_is_complete(date: pd.Timestamp, now: pd.Timestamp | None = None) -> bool:
+    current = _now(now)
+    end = pd.Timestamp(date).normalize() + pd.Timedelta(hours=EXTENDED_SESSION_END[0], minutes=EXTENDED_SESSION_END[1])
+    return current >= end
 
 
 def resample_eth(intraday: pd.DataFrame, rule: str) -> pd.DataFrame:

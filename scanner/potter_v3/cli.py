@@ -106,7 +106,7 @@ def run_scan(args: argparse.Namespace) -> int:
                     "stop": (t.plan.stop_rule, round(t.plan.stop_level, 2)),
                     "tradeable": t.tradeable,
                     "reason": t.untradeable_reason,
-                    "confirmed_24h": t.confirmed_24h,
+                    "confirmed_24h": t.confirmed_24h if data.last_session_complete else "pending (24h candle still forming)",
                 }
             )
     hits = [r for r in rows if r["status"] == "trigger"]
