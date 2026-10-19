@@ -91,7 +91,10 @@ webui/prediction_results/
 
 scanner/reports/daily_brief.md
 
-# Potter v3 research bar cache (rebuilt from Alpaca on demand)
+# Potter v3 moved to projects\Potter Box Strategy on 2026-10-19; these are
+# leftover local copies of its cache and outputs, safe to delete.
 scanner/reports/potter_v3_cache/
 scanner/reports/potter_v3/
+
+# Experiment bar caches (rebuilt from Alpaca on demand)
 scanner/research/experiments/**/bars_cache.pkl
